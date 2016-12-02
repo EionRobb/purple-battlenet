@@ -45,6 +45,7 @@ typedef struct {
 	
 	GHashTable *token_callbacks;
 	GHashTable *imported_services;
+	GHashTable *exported_services;
 	
 	GList *services_to_import;
 	GList *services_to_export;
@@ -122,7 +123,7 @@ bn_service_add_method(BattleNetService *service, guint method_id, const Protobuf
 static BattleNetServiceMethod
 bn_get_service_method(BattleNetAccount *bna, guint service_id, guint method_id, ProtobufCMessage **request)
 {
-	BattleNetService *service = g_hash_table_lookup(bna->imported_services, GINT_TO_POINTER(service_id));
+	BattleNetService *service = g_hash_table_lookup(bna->exported_services, GINT_TO_POINTER(service_id));
 	BattleNetServiceWrapper *wrapper = NULL;
 	
 	if (service != NULL) {
@@ -131,6 +132,7 @@ bn_get_service_method(BattleNetAccount *bna, guint service_id, guint method_id, 
 	
 	if (wrapper != NULL) {
 		if (request) {
+			*request = g_malloc0(wrapper->request_descriptor->sizeof_message);
 			protobuf_c_message_init(wrapper->request_descriptor, *request);
 		}
 		return wrapper->callback;
@@ -218,7 +220,7 @@ bn_socket_got_data(gpointer userdata, PurpleSslConnection *conn, PurpleInputCond
 						BattleNetCallbackWrapper *callback_wrapper = g_hash_table_lookup(bna->token_callbacks, GINT_TO_POINTER(proto_header->token));
 						ProtobufCMessageDescriptor *body_desc;
 						
-						purple_debug_info("battlenet", "Callback for token %ud\n", proto_header->token);
+						purple_debug_info("battlenet", "Callback for token %u\n", proto_header->token);
 						if (callback_wrapper && callback_wrapper->callback) {
 							ProtobufCMessage *proto_body;
 							
@@ -235,17 +237,24 @@ bn_socket_got_data(gpointer userdata, PurpleSslConnection *conn, PurpleInputCond
 					BattleNetServiceMethod service_method;
 					ProtobufCMessage *response, *request;
 					
-					purple_debug_info("battlenet", "Request %ud.%ud\n", proto_header->service_id, proto_header->method_id);
+					purple_debug_info("battlenet", "Request %u.%u\n", proto_header->service_id, proto_header->method_id);
 					service_method = bn_get_service_method(bna, proto_header->service_id, proto_header->method_id, &request);
 					if (service_method != NULL) {
 						request = protobuf_c_message_unpack(request->descriptor, NULL, bna->frame_body_len, bna->frame_body);
 						response = service_method(bna, request);
 						protobuf_c_message_free_unpacked(request, NULL);
 						
-						bn_send_request(bna, 254, 0, response, NULL, NULL, NULL);
-						protobuf_c_message_free_unpacked(response, NULL); //TODO this is probably the wrong _free() function?
+						if (response != NULL) {
+							bn_send_request(bna, 254, 0, response, NULL, NULL, NULL);
+							protobuf_c_message_free_unpacked(response, NULL); //TODO this is probably the wrong _free() function?
+						}
 					} else {
-						purple_debug_error("battlenet", "Unknown method requested\n");
+						BattleNetService *service = g_hash_table_lookup(bna->exported_services, GINT_TO_POINTER(proto_header->service_id));
+						if (service != NULL) {
+							purple_debug_error("battlenet", "Unknown method %u for service %s requested\n", proto_header->method_id, service->name);
+						} else {
+							purple_debug_error("battlenet", "Unknown service requested\n");
+						}
 					}
 				}
 				
@@ -415,15 +424,16 @@ bn_socket_connected(gpointer userdata, PurpleSslConnection *conn, PurpleInputCon
 	bind_request.n_exported_service = g_list_length(bna->services_to_export);
 	bind_request.exported_service = g_new0(Bnet__Protocol__Connection__BoundService *, bind_request.n_exported_service);
 	
-	for(i = 0, list = bna->services_to_import; list; i++, list = list->next) {
+	for(i = 0, list = bna->services_to_export; list; i++, list = list->next) {
 		BattleNetService *service = (BattleNetService *) list->data;
 		Bnet__Protocol__Connection__BoundService *bound_service = g_new0(Bnet__Protocol__Connection__BoundService, 1);
 		
 		bnet__protocol__connection__bound_service__init(bound_service);
-		bound_service->id = service->id = i;
+		bound_service->id = service->id = i + 1;
 		bound_service->hash = bn_fnv1a_32_hash(service->name);
 		
 		bind_request.exported_service[i] = bound_service;
+		g_hash_table_insert(bna->exported_services, GINT_TO_POINTER(service->id), service);
 	}
 	
 	//Invoke a RPC call to ConnectionService.connect (service_id=0, method_id=1 ) and provide a list of services exported by the client
@@ -460,12 +470,12 @@ bn_authentication_logon(BattleNetAccount *bna)
 {
 	Bnet__Protocol__Authentication__LogonRequest request = BNET__PROTOCOL__AUTHENTICATION__LOGON_REQUEST__INIT;
 	
-	request.program = "BBNR";
+	request.program = "App";
 	request.platform = "Win"; //TODO?
-	request.locale = "enGB"; //TODO?
-	request.version = "8142"; //TODO should this be 1.5.2.8142??
+	request.locale = "enUS"; //TODO?
+	request.version = "8180";
 	request.has_application_version = TRUE;
-	request.application_version = 1; //TODO should this be 8142??
+	request.application_version = 1;
 	request.has_public_computer = TRUE;
 	request.public_computer = FALSE;
 	request.has_disconnect_on_cookie_fail = TRUE;
@@ -474,7 +484,7 @@ bn_authentication_logon(BattleNetAccount *bna)
 	request.allow_logon_queue_notifications = TRUE;
 	request.has_web_client_verification = TRUE;
 	request.web_client_verification = TRUE;
-	request.user_agent = "Battle.net/1.5.2.8142";
+	request.user_agent = "Battle.net/1.5.2.8180 (PC;Intel_R_Core_TM_i7_2600K_CPU_3.40GHz_16352_MB_;Desktop;c05571db8b3f670d74b2238da294daef0e278166;26424;AMD_Radeon_HD_6800_Series;ATI;4098;Direct3D_9.0c_aticfx32.dll_8.17.10.1404_;1011;30;Full;Windows_7_Service_Pack_1_6.1.7601_64bit;8;Intel_R_Core_TM_i7_2600K_CPU_3.40GHz;4;True;False;False;False;True;False;False;True;True;True;False;1;False;16352;True;True;True;False;1920;1080;96;Desktop;True) Battle.net/CSharp";
 	
 	// response is sent via RPC to bn_authentication_logon_result
 	bn_send_request(bna, bna->auth_service_id, 1, (ProtobufCMessage *) &request, NULL, NULL, NULL);
@@ -497,15 +507,44 @@ bn_authentication_logon_result(BattleNetAccount *bna, ProtobufCMessage *request_
 				// self.game_account = self.game_accounts[0]
 			// self.api.authentication_api.authentication_server.select_game_account_DEPRECATED(self.game_account)
 	
+	
 	return NULL;
+}
+
+static void
+bn_auth_verify_web_credentials(BattleNetAccount *bna, const gchar *auth_url)
+{
+	Bnet__Protocol__Authentication__VerifyWebCredentialsRequest verify_request = BNET__PROTOCOL__AUTHENTICATION__VERIFY_WEB_CREDENTIALS_REQUEST__INIT;
+	gchar *web_credentials = "US-";//TODO
+	
+	//TODO use the auth_url to auth
+	// then grab the content of 
+	//Location: http://localhost:0/?ST={this-bit}&region=&accountName=...
+	
+	verify_request.has_web_credentials = TRUE;
+	verify_request.web_credentials.len = strlen(web_credentials) * sizeof(guint8);
+	verify_request.web_credentials.data = (guint8 *) web_credentials;
+	
+	bn_send_request(bna, bna->auth_service_id, 7, (ProtobufCMessage *) &verify_request, NULL, NULL, NULL);
+	
 }
 
 ProtobufCMessage *
 bn_challenge_on_external_challenge(BattleNetAccount *bna, ProtobufCMessage *request_in)
 {
 	Bnet__Protocol__Challenge__ChallengeExternalRequest *request = (Bnet__Protocol__Challenge__ChallengeExternalRequest *) request_in;
+	gchar *payload;
 	
-	(void)request;
+	if (!purple_strequal(request->payload_type, "web_auth_url")) {
+		gchar *error_message = g_strdup_printf("Unknown auth payload_type '%s'", request->payload_type);
+		purple_connection_error(bna->pc, PURPLE_CONNECTION_ERROR_AUTHENTICATION_IMPOSSIBLE, error_message);
+		g_free(error_message);
+		return NULL;
+	}
+	
+	payload = g_strndup((gchar *)request->payload.data, request->payload.len);
+	bn_auth_verify_web_credentials(bna, payload);
+	g_free(payload);
 	
 	return NULL;
 }
@@ -581,6 +620,7 @@ bn_login(PurpleAccount *account)
 	
 	bna->token_callbacks = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free); //TODO proper free func
 	bna->imported_services = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, (GDestroyNotify) bn_free_service);
+	bna->exported_services = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, (GDestroyNotify) bn_free_service);
 	
 	
 	
@@ -600,6 +640,16 @@ bn_login(PurpleAccount *account)
 	service = bn_create_service(bna, "bnet.protocol.challenge.ChallengeNotify");
 	bn_service_add_method(service, 3, bnet__protocol__challenge__challenge_external_request__descriptor, bn_challenge_on_external_challenge);
 	bna->services_to_export = g_list_append(bna->services_to_export, service);
+	
+	service = bn_create_service(bna, "bnet.protocol.account.AccountNotify");
+	bna->services_to_export = g_list_append(bna->services_to_export, service);
+	
+	service = bn_create_service(bna, "bnet.protocol.friends.FriendsNotify");
+	bna->services_to_export = g_list_append(bna->services_to_export, service);
+	
+			// self.notification_api.notification_listener_service,
+			// self.channel_api.channel_subscriber_service,
+			// self.channel_api.channel_invitation_notify_service,
 	
 	
 	
@@ -628,6 +678,9 @@ bn_close(PurpleConnection *pc)
 	
 	g_hash_table_remove_all(bna->token_callbacks);
 	g_hash_table_unref(bna->token_callbacks);
+	
+	g_hash_table_remove_all(bna->exported_services);
+	g_hash_table_unref(bna->exported_services);
 	
 	g_hash_table_remove_all(bna->imported_services);
 	g_hash_table_unref(bna->imported_services);
