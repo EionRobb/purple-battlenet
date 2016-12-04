@@ -20,9 +20,10 @@
 #include "bnet/notification_service.pb-c.h"
 #include "bnet/friends_service.pb-c.h"
 #include "bnet/channel_service.pb-c.h"
+#include "bnet/channel_invitation_service.pb-c.h"
 
 #define BATTLENET_PLUGIN_ID "prpl-eionrobb-battlenet"
-#define BATTLENET_PLUGIN_WEBSITE ""
+#define BATTLENET_PLUGIN_WEBSITE "https://bitbucket.org/EionRobb/purple-battlenet/overview"
 
 
 #if !PURPLE_VERSION_CHECK(3, 0, 0)
@@ -34,9 +35,15 @@
 #define PURPLE_CONNECTION_CONNECTING            PURPLE_CONNECTING
 #define PURPLE_CONNECTION_CONNECTED             PURPLE_CONNECTED
 
+#define PurpleIMTypingState	                    PurpleTypingState
+#define PURPLE_IM_TYPING                        PURPLE_TYPING
+
+#define purple_protocol_got_user_status		    purple_prpl_got_user_status
+
 #define purple_request_cpar_from_connection(a)  purple_connection_get_account(a), NULL, NULL
 
 #define purple_serv_got_im                      serv_got_im
+#define purple_serv_got_typing                  serv_got_typing
 
 #endif
 
@@ -67,10 +74,15 @@ typedef struct {
 	guint32 auth_service_id;
 	guint32 presence_service_id;
 	guint32 friends_service_id;
+	guint32 channel_invitation_service_id;
+	guint32 notify_service_id;
 	
 	guint next_token;
 	guint next_object_id;
 	Bnet__Protocol__EntityId *account_entity;
+	
+	GHashTable *entity_id_to_battle_tag;
+	GHashTable *battle_tag_to_entity_id;
 } BattleNetAccount;
 
 typedef struct {
@@ -93,6 +105,100 @@ typedef struct {
 	ProtobufCMessageDescriptor *response_descriptor;
 	gpointer user_data;
 } BattleNetCallbackWrapper;
+
+
+static guint
+bn_entity_id_hash(gconstpointer key)
+{
+	const Bnet__Protocol__EntityId *entity_id = key;
+	guint hash = 23;
+	
+	hash = hash * 37 + g_int64_hash(&entity_id->high);
+	hash = hash * 37 + g_int64_hash(&entity_id->low);
+	
+	return hash;
+}
+
+static gboolean
+bn_entity_id_equal(gconstpointer a, gconstpointer b) {
+	const Bnet__Protocol__EntityId *entity_id_a = a, *entity_id_b = b;
+	
+	return (entity_id_a->high == entity_id_b->high && entity_id_a->low == entity_id_b->low);
+}
+
+static Bnet__Protocol__EntityId *
+bn_copy_entity_id(const Bnet__Protocol__EntityId *in) {
+	Bnet__Protocol__EntityId *out = g_new0(Bnet__Protocol__EntityId, 1);
+	
+	bnet__protocol__entity_id__init(out);
+	out->high = in->high;
+	out->low = in->low;
+	
+	return out;
+}
+
+static PurpleGroup *bn_get_buddy_group();
+
+static void
+bn_add_buddy_internal(BattleNetAccount *bna, const Bnet__Protocol__EntityId *entity_id, const gchar *battle_tag, const gchar *full_name)
+{
+	PurpleBuddy *buddy;
+	gchar *temp_id;
+	
+	g_return_if_fail(entity_id);
+	g_return_if_fail(battle_tag);
+	
+	buddy = purple_blist_find_buddy(bna->account, battle_tag);
+	if (buddy == NULL) {
+		buddy = purple_buddy_new(bna->account, battle_tag, full_name);
+		purple_blist_add_buddy(buddy, NULL, bn_get_buddy_group(), NULL);
+		
+		temp_id = g_strdup_printf("%" G_GUINT64_FORMAT, entity_id->high);
+		purple_blist_node_set_string(PURPLE_BLIST_NODE(buddy), "entity_id_high", temp_id);
+		g_free(temp_id);
+		
+		temp_id = g_strdup_printf("%" G_GUINT64_FORMAT, entity_id->low);
+		purple_blist_node_set_string(PURPLE_BLIST_NODE(buddy), "entity_id_low", temp_id);
+		g_free(temp_id);
+	}
+	
+	if (!g_hash_table_lookup(bna->battle_tag_to_entity_id, battle_tag)) {
+		g_hash_table_insert(bna->battle_tag_to_entity_id, g_strdup(battle_tag), bn_copy_entity_id(entity_id));
+		g_hash_table_insert(bna->entity_id_to_battle_tag, bn_copy_entity_id(entity_id), g_strdup(battle_tag));
+	}
+}
+
+static const Bnet__Protocol__EntityId *
+bn_get_buddy_entity_id(BattleNetAccount *bna, const gchar *battle_tag)
+{
+	Bnet__Protocol__EntityId *entity_id;
+	// PurpleBuddy *buddy;
+	
+	entity_id = g_hash_table_lookup(bna->battle_tag_to_entity_id, battle_tag);
+	
+	if (entity_id != NULL) {
+		return entity_id;
+	}
+	
+	// buddy = purple_blist_find_buddy(bna->account, battle_tag);
+	// if (buddy != NULL) {
+		// const gchar *entity_id_high = purple_blist_node_get_string(PURPLE_BLIST_NODE(buddy), "entity_id_high");
+		// const gchar *entity_id_low = purple_blist_node_get_string(PURPLE_BLIST_NODE(buddy), "entity_id_low");
+		
+		// if (entity_id_high != NULL && entity_id_low != NULL) {
+			// entity_id = g_new0(Bnet__Protocol__EntityId, 1);
+			// entity_id->high = g_ascii_strtoull(entity_id_high, NULL, 10);
+			// entity_id->low = g_ascii_strtoull(entity_id_low, NULL, 10);
+			
+			// g_hash_table_insert(bna->battle_tag_to_entity_id, g_strdup(battle_tag), entity_id); // don't copy this entity_id to prevent memleak
+			// g_hash_table_insert(bna->entity_id_to_battle_tag, bn_copy_entity_id(entity_id), g_strdup(battle_tag));
+			
+			// return entity_id;
+		// }
+	// }
+	
+	return NULL;
+}
 
 
 static void
@@ -241,14 +347,18 @@ bn_socket_got_data(gpointer userdata, PurpleSslConnection *conn, PurpleInputCond
 						
 						purple_debug_info("battlenet", "Callback for token %u\n", proto_header->token);
 						if (callback_wrapper && callback_wrapper->callback) {
-							ProtobufCMessage *proto_body;
+							ProtobufCMessage *proto_body = NULL;
 							
 							body_desc = callback_wrapper->response_descriptor;
-							proto_body = protobuf_c_message_unpack(body_desc, NULL, bna->frame_body_len, bna->frame_body);
+							if (body_desc != NULL) {
+								proto_body = protobuf_c_message_unpack(body_desc, NULL, bna->frame_body_len, bna->frame_body);
+							}
 							callback_wrapper->callback(bna, proto_body, callback_wrapper->user_data);
 							
 							g_hash_table_remove(bna->token_callbacks, GINT_TO_POINTER(proto_header->token));
-							protobuf_c_message_free_unpacked(proto_body, NULL);
+							if (body_desc != NULL) {
+								protobuf_c_message_free_unpacked(proto_body, NULL);
+							}
 						}
 					}
 				} else {
@@ -317,7 +427,7 @@ bn_next_token(BattleNetAccount *bna)
 static guint
 bn_next_object_id(BattleNetAccount *bna)
 {
-	guint next_object_id = bna->next_object_id;
+	guint next_object_id = bna->next_object_id + 1;
 	
 	bna->next_object_id += 1;
 	
@@ -325,7 +435,7 @@ bn_next_object_id(BattleNetAccount *bna)
 }
 
 
-PurpleGroup *
+static PurpleGroup *
 bn_get_buddy_group()
 {
     PurpleGroup *bn_group = purple_blist_find_group(_("Battle.net"));
@@ -384,7 +494,9 @@ bn_send_request(BattleNetAccount *bna, guint service_id, guint method_id, Protob
 	if (callback != NULL) {
 		BattleNetCallbackWrapper *wrapper = g_new0(BattleNetCallbackWrapper, 1);
 		wrapper->callback = callback;
-		wrapper->response_descriptor = g_memdup(response_type, sizeof(ProtobufCMessageDescriptor));
+		if (response_type != NULL) {
+			wrapper->response_descriptor = g_memdup(response_type, sizeof(ProtobufCMessageDescriptor));
+		}
 		wrapper->user_data = user_data;
 		
 		g_hash_table_insert(bna->token_callbacks, GINT_TO_POINTER(header.token), wrapper);
@@ -446,6 +558,10 @@ bn_on_connect(BattleNetAccount *bna, ProtobufCMessage *body, gpointer user_data)
 			bna->presence_service_id = service_id;
 		} else if (purple_strequal(service->name, "bnet.protocol.friends.FriendsService")) {
 			bna->friends_service_id = service_id;
+		} else if (purple_strequal(service->name, "bnet.protocol.notification.NotificationService")) {
+			bna->notify_service_id = service_id;
+		} else if (purple_strequal(service->name, "bnet.protocol.channel_invitation.ChannelInvitationService")) {
+			bna->channel_invitation_service_id = service_id;
 		}
 	}
 	
@@ -560,22 +676,19 @@ bn_presence_subscribe(BattleNetAccount *bna, Bnet__Protocol__EntityId *entity)
 	bn_send_request(bna, bna->presence_service_id, 1, (ProtobufCMessage *) &request, NULL, NULL, NULL);
 }
 
-static Bnet__Protocol__EntityId *
-bn_copy_entity_id(const Bnet__Protocol__EntityId *in) {
-	Bnet__Protocol__EntityId *out = g_new0(Bnet__Protocol__EntityId, 1);
-	
-	out->high = in->high;
-	out->low = in->low;
-	
-	return out;
-}
+typedef struct {
+	BattleNetAccount *bna;
+	guint64 invite_id;
+} BattleNetInviteResponseStore;
+
+static void bn_friends_auth_accept(gpointer data);
+static void bn_friends_auth_reject(gpointer data);
 
 static void
 bn_friends_subscribe_result(BattleNetAccount *bna, ProtobufCMessage *body, gpointer user_data)
 {
 	Bnet__Protocol__Friends__SubscribeToFriendsResponse *response = (Bnet__Protocol__Friends__SubscribeToFriendsResponse *) body;
 	guint i;
-	PurpleGroup *group = bn_get_buddy_group();
 	
 	if (body == NULL) {
 		purple_debug_error("battlenet", "Friends subscription failed\n");
@@ -584,23 +697,23 @@ bn_friends_subscribe_result(BattleNetAccount *bna, ProtobufCMessage *body, gpoin
 	
 	for (i = 0; i < response->n_friends; i++) {
 		Bnet__Protocol__Friends__Friend *friend = response->friends[i];
-		PurpleBuddy *buddy;
 		
 		bn_presence_subscribe(bna, friend->id);
+		purple_debug_info("battlenet", "This friend has high %" G_GUINT64_FORMAT " and low %" G_GUINT64_FORMAT "\n", friend->id->high, friend->id->low);
 		
 		if (friend->battle_tag != NULL) {
-			buddy = purple_blist_find_buddy(bna->account, friend->battle_tag);
-			if (buddy == NULL) {
-				buddy = purple_buddy_new(bna->account, friend->battle_tag, friend->full_name);
-				purple_blist_add_buddy(buddy, NULL, group, NULL);
-			}
+			bn_add_buddy_internal(bna, friend->id, friend->battle_tag, friend->full_name);
 		}
 	}
 	
 	for (i = 0; i < response->n_received_invitations; i++) {
 		Bnet__Protocol__Invitation__Invitation *invitation = response->received_invitations[i];
+		BattleNetInviteResponseStore *store = g_new0(BattleNetInviteResponseStore, 1);
 		
-		(void) invitation; //TODO handle invitations
+		store->bna = bna;
+		store->invite_id = invitation->id;
+				
+		purple_account_request_authorization(bna->account, invitation->inviter_name, NULL, NULL, invitation->invitation_message, FALSE, bn_friends_auth_accept, bn_friends_auth_reject, store);
 	}
 	
 }
@@ -613,30 +726,54 @@ bn_friends_subscribe_to_friends(BattleNetAccount *bna)
 	bn_send_request(bna, bna->friends_service_id, 1, (ProtobufCMessage *) &request, bn_friends_subscribe_result, &bnet__protocol__friends__subscribe_to_friends_response__descriptor, NULL);
 }
 
+static void
+bn_channel_subscribe_to_channels(BattleNetAccount *bna)
+{
+	Bnet__Protocol__ChannelInvitation__SubscribeRequest request = BNET__PROTOCOL__CHANNEL_INVITATION__SUBSCRIBE_REQUEST__INIT;
+	
+	bn_send_request(bna, bna->channel_invitation_service_id, 1, (ProtobufCMessage *) &request, NULL, NULL, NULL);
+}
+
+
+static void
+bn_auth_on_select_game_account(BattleNetAccount *bna, ProtobufCMessage *body, gpointer user_data)
+{
+	bn_friends_subscribe_to_friends(bna);
+	bn_channel_subscribe_to_channels(bna);
+	
+	purple_connection_set_state(bna->pc, PURPLE_CONNECTION_CONNECTED);
+}
+
+static void
+bn_auth_select_game_account_DEPRECATED(BattleNetAccount *bna, Bnet__Protocol__EntityId *entity)
+{
+	bn_send_request(bna, bna->auth_service_id, 4, (ProtobufCMessage *) entity, bn_auth_on_select_game_account, NULL, NULL);
+}
+
 ProtobufCMessage *
 bn_authentication_logon_result(BattleNetAccount *bna, ProtobufCMessage *request_in)
 {
 	Bnet__Protocol__Authentication__LogonResult *request = (Bnet__Protocol__Authentication__LogonResult *) request_in;
 	guint i;
 	
-			// logger.info("Login complete for %s, selecting game account", body.battle_tag)
-			// self.account_entity = body.account
-			// self.api.presence_api.presence_service.subscribe(body.account)
-			// for account in body.game_account:
-				// self.game_accounts.append(account)
-				// self.api.presence_api.presence_service.subscribe(account)
-			// if len(self.game_accounts):
-				// self.game_account = self.game_accounts[0]
-			// self.api.authentication_api.authentication_server.select_game_account_DEPRECATED(self.game_account)
 	purple_debug_info("battlenet", "Battle tag is %s\n", request->battle_tag);
 	bna->account_entity = bn_copy_entity_id(request->account);
 	
 	bn_presence_subscribe(bna, request->account);
 	for (i = 0; i < request->n_game_account; i++) {
 		bn_presence_subscribe(bna, request->game_account[i]);
+		if (i == 0) {
+			bn_auth_select_game_account_DEPRECATED(bna, request->game_account[i]);
+		}
 	}
 	
-	bn_friends_subscribe_to_friends(bna);
+	if (request->n_game_account == 0) {
+		bn_friends_subscribe_to_friends(bna);
+		// dont do this, it errors
+		//bn_channel_subscribe_to_channels(bna);
+		
+		purple_connection_set_state(bna->pc, PURPLE_CONNECTION_CONNECTED);
+	}
 	
 	return NULL;
 }
@@ -708,22 +845,177 @@ bn_challenge_on_external_challenge(BattleNetAccount *bna, ProtobufCMessage *requ
 	return NULL;
 }
 
+static void
+bn_channel_update_presence(BattleNetAccount *bna, Bnet__Protocol__EntityId *entity_id, size_t n_field_operation, Bnet__Protocol__Presence__FieldOperation **field_operation)
+{
+	guint i;
+	const gchar *battle_tag = g_hash_table_lookup(bna->entity_id_to_battle_tag, entity_id);
+	const gchar *full_name = NULL;
+	gint64 last_online = 0;
+	gboolean is_away = FALSE;
+	gboolean is_online = FALSE;
+	gboolean is_busy = FALSE;
+	gint64 away_time = 0;
+	const gchar *in_game = NULL;
+	
+	for (i = 0; i < n_field_operation; i++) {
+		Bnet__Protocol__Presence__FieldOperation *fo = field_operation[i];
+		
+		// Program code magic is hex encoding of program name
+		if (fo->field->key->program == 0x424e) { // 16974 == BN;  0x42 == B  0x4e == N
+			
+			// see https://github.com/HearthSim/python-bnet/wiki/Service-Methods#application-bn
+			switch(fo->field->key->group) {
+				
+				// Account
+				case 1: {
+					switch(fo->field->key->field) {
+						case 1: {
+							//full name
+							full_name = fo->field->value->string_value;
+						} break;
+						case 4: {
+							//battle tag
+							battle_tag = fo->field->value->string_value;
+						} break;
+						case 6: {
+							// last online
+							last_online = fo->field->value->int_value;
+						} break;
+						case 7: {
+							// away
+							is_away = fo->field->value->bool_value;
+							is_online = !fo->field->value->bool_value;
+						} break;
+						case 8: {
+							// away time
+							away_time = fo->field->value->int_value;
+						} break;
+						case 11: {
+							// dnd
+							is_busy = fo->field->value->bool_value;
+							is_online = !fo->field->value->bool_value;
+						} break;
+						default: {
+							purple_debug_error("battlenet", "Unknown presence field %d for group 1\n", fo->field->key->field);
+						}
+					}
+				} break;
+				
+				// Game Account
+				case 2: {
+					switch(fo->field->key->field) {
+						case 1: {
+							//account online
+							is_online = fo->field->value->bool_value;
+						} break;
+						case 2: {
+							// busy
+							is_busy = fo->field->value->bool_value;
+							is_online = !fo->field->value->bool_value;
+						} break;
+						case 3: {
+							//program
+							in_game = fo->field->value->string_value;
+						} break;
+						case 4: {
+							// last online
+							last_online = fo->field->value->int_value;
+						} break;
+						case 5: {
+							//battle tag
+							battle_tag = fo->field->value->string_value;
+						} break;
+						case 6: {
+							//account name
+							//account_name = fo->field->value->string_value;
+						} break;
+						case 7: {
+							// account id
+							entity_id = fo->field->value->entityid_value;
+						} break;
+						default: {
+							purple_debug_error("battlenet", "Unknown presence field %d for group 2\n", fo->field->key->field);
+						}
+					}
+				} break;
+				
+				default:
+					purple_debug_error("battlenet", "Unknown presence key group %d\n", fo->field->key->group);
+					break;
+			}
+		} else {
+			purple_debug_error("battlenet", "Unknown presence program %x\n", fo->field->key->program);
+		}
+	}
+	
+	purple_debug_info("battlenet", "Battle tag %s has high %" G_GUINT64_FORMAT " and low %" G_GUINT64_FORMAT "\n", battle_tag, entity_id->high, entity_id->low);
+	//TODO this entity_id is wrong for this battle_tag
+	//bn_add_buddy_internal(bna, entity_id, battle_tag, full_name);
+	(void) full_name;
+	
+	
+	if (is_online) {
+		purple_protocol_got_user_status(bna->account, battle_tag, "online", NULL);
+	} else if (is_away) {
+		purple_protocol_got_user_status(bna->account, battle_tag, "away", NULL);
+	}  else if (is_busy) {
+		purple_protocol_got_user_status(bna->account, battle_tag, "busy", NULL);
+	} else {
+		purple_protocol_got_user_status(bna->account, battle_tag, "offline", NULL);
+	}
+	
+	//TODO
+	(void) in_game;
+	(void) away_time;
+	(void) last_online;
+}
+
 ProtobufCMessage *
 bn_channel_notify_add(BattleNetAccount *bna, ProtobufCMessage *request_in)
 {
 	Bnet__Protocol__Channel__AddNotification *request = (Bnet__Protocol__Channel__AddNotification *) request_in;
+	Bnet__Protocol__Presence__ChannelState *presence = NULL;
 	
-	(void) request; //TODO
-			// presence = body.channel_state.Extensions[ChannelState.presence]
-			// self.update_presence(presence.entity_id, presence.field_operation)
+	// // If we're using protobuf extensions we can use this code
+	// guint i;
+	
+	// for (i = 0; i < request->channel_state->base.n_unknown_fields; i++) {
+		// ProtobufCMessageUnknownField unknown_field = request->channel_state->base.unknown_fields[i];
+		
+		// if (unknown_field.tag == 101) {
+			// presence = bnet__protocol__presence__channel_state__unpack(NULL, unknown_field.len, unknown_field.data);
+		// }
+	// }
+	
+	// if (presence != NULL) {
+		// bn_channel_update_presence(bna, presence->entity_id, presence->n_field_operation, presence->field_operation);
+		// bnet__protocol__presence__channel_state__free_unpacked(presence, NULL);
+	// }
+	
+	// If we edited the protobufs to add the fields to the ChannelState then use this code
+	presence = request->channel_state->presence;
+	if (presence != NULL) {
+		bn_channel_update_presence(bna, presence->entity_id, presence->n_field_operation, presence->field_operation);
+	}
 	
 	return NULL;
 }
 
-typedef struct {
-	BattleNetAccount *bna;
-	guint64 invite_id;
-} BattleNetInviteResponseStore;
+ProtobufCMessage *
+bn_channel_notify_update_channel_state(BattleNetAccount *bna, ProtobufCMessage *request_in)
+{
+	Bnet__Protocol__Channel__UpdateChannelStateNotification *request = (Bnet__Protocol__Channel__UpdateChannelStateNotification *) request_in;
+	Bnet__Protocol__Presence__ChannelState *presence = NULL;
+	
+	//See above about this code
+	presence = request->state_change->presence;
+	if (presence != NULL) {
+		bn_channel_update_presence(bna, presence->entity_id, presence->n_field_operation, presence->field_operation);
+	}
+	
+	return NULL;
+}
 
 static void
 bn_friends_auth_accept(gpointer data)
@@ -757,8 +1049,6 @@ bn_friends_on_invitation(BattleNetAccount *bna, ProtobufCMessage *request_in)
 	
 	store->bna = bna;
 	store->invite_id = request->invitation->id;
-	
-			// callback(invitation.id, invitation.inviter_identity, invitation.inviter_name)
 			
 	purple_account_request_authorization(bna->account, request->invitation->inviter_name, NULL, NULL, request->invitation->invitation_message, FALSE, bn_friends_auth_accept, bn_friends_auth_reject, store);
 	
@@ -770,8 +1060,7 @@ bn_friends_on_add(BattleNetAccount *bna, ProtobufCMessage *request_in)
 {
 	Bnet__Protocol__Friends__FriendNotification *request = (Bnet__Protocol__Friends__FriendNotification *) request_in;
 	
-	(void) request; //TODO
-			// callback(invitation.id, invitation.inviter_identity, invitation.inviter_name)
+	bn_add_buddy_internal(bna, request->target->id, request->target->battle_tag, request->target->full_name);
 	
 	bn_presence_subscribe(bna, request->target->id);
 	
@@ -800,10 +1089,68 @@ bn_connection_handle_echo_request(BattleNetAccount *bna, ProtobufCMessage *reque
 }
 
 ProtobufCMessage *
+bn_connection_handle_force_disconnect_request(BattleNetAccount *bna, ProtobufCMessage *request_in)
+{
+	Bnet__Protocol__Connection__DisconnectNotification *request = (Bnet__Protocol__Connection__DisconnectNotification *) request_in;
+	
+	purple_debug_error("battlenet", "Kicked off by server because of \"%s\" (%u)\n", request->reason, request->error_code);
+	purple_connection_error(bna->pc, PURPLE_CONNECTION_ERROR_OTHER_ERROR, request->reason);
+	
+	return NULL;
+}
+
+static void
+bn_notification_send_whisper(BattleNetAccount *bna, const Bnet__Protocol__EntityId *target_id, const gchar *message)
+{
+	Bnet__Protocol__Notification__Notification notification = BNET__PROTOCOL__NOTIFICATION__NOTIFICATION__INIT;
+	Bnet__Protocol__Attribute__Variant value = BNET__PROTOCOL__ATTRIBUTE__VARIANT__INIT;
+	Bnet__Protocol__Attribute__Attribute attribute = BNET__PROTOCOL__ATTRIBUTE__ATTRIBUTE__INIT;
+	
+	notification.target_id = (Bnet__Protocol__EntityId *) target_id;
+	notification.type = "WHISPER";
+	
+	value.string_value = (gchar *) message;
+	attribute.name = "whisper";
+	attribute.value = &value;
+	notification.n_attribute = 1;
+	notification.attribute = g_new0(Bnet__Protocol__Attribute__Attribute *, 1);
+	notification.attribute[0] = &attribute;
+	
+	bn_send_request(bna, bna->notify_service_id, 1, (ProtobufCMessage *) &notification, NULL, NULL, NULL);
+	
+	g_free(notification.attribute);
+}
+
+static void
+bn_notification_send_typing(BattleNetAccount *bna, const Bnet__Protocol__EntityId *target_id, gboolean is_typing)
+{
+	Bnet__Protocol__Notification__Notification notification = BNET__PROTOCOL__NOTIFICATION__NOTIFICATION__INIT;
+	Bnet__Protocol__Attribute__Variant value = BNET__PROTOCOL__ATTRIBUTE__VARIANT__INIT;
+	Bnet__Protocol__Attribute__Attribute attribute = BNET__PROTOCOL__ATTRIBUTE__ATTRIBUTE__INIT;
+	
+	notification.target_id = (Bnet__Protocol__EntityId *) target_id;
+	notification.type = "TYPING";
+	
+	value.has_bool_value = TRUE;
+	value.bool_value = is_typing;
+	attribute.name = "on";
+	attribute.value = &value;
+	notification.n_attribute = 1;
+	notification.attribute = g_new0(Bnet__Protocol__Attribute__Attribute *, 1);
+	notification.attribute[0] = &attribute;
+	
+	bn_send_request(bna, bna->notify_service_id, 1, (ProtobufCMessage *) &notification, NULL, NULL, NULL);
+	
+	g_free(notification.attribute);
+}
+
+ProtobufCMessage *
 bn_notification_on_notification_received(BattleNetAccount *bna, ProtobufCMessage *request_in)
 {
-	Bnet__Protocol__Notification__Notification *request = (Bnet__Protocol__Notification__Notification *) request;
+	Bnet__Protocol__Notification__Notification *request = (Bnet__Protocol__Notification__Notification *) request_in;
 	guint i;
+	
+	bn_add_buddy_internal(bna, request->sender_id, request->sender_battle_tag, NULL);
 	
 	purple_debug_info("battlenet", "Notifcation type %s\n", request->type);
 	for (i = 0; i < request->n_attribute; i++) {
@@ -812,8 +1159,12 @@ bn_notification_on_notification_received(BattleNetAccount *bna, ProtobufCMessage
 		purple_debug_info("battlenet", "Notification %d has attribute %s\n", i, attribute->name);
 	}
 	
+	purple_debug_info("battlenet", "Battle tag %s has high %" G_GUINT64_FORMAT " and low %" G_GUINT64_FORMAT "\n", request->sender_battle_tag, request->sender_id->high, request->sender_id->low);
+	
 	if (purple_strequal(request->type, "WHISPER")) {
 		purple_serv_got_im(bna->pc, request->sender_battle_tag, request->attribute[0]->value->string_value, PURPLE_MESSAGE_RECV, time(NULL));
+	} else if (purple_strequal(request->type, "TYPING")) {
+		purple_serv_got_typing(bna->pc, request->sender_battle_tag, 7, request->attribute[0]->value->bool_value ? PURPLE_TYPING : PURPLE_NOT_TYPING);
 	} else {
 		purple_debug_error("battlenet", "Unknown notification type\n");
 	}
@@ -870,6 +1221,49 @@ bn_set_status(PurpleAccount *account, PurpleStatus *status)
 	// rc_socket_write_json(ya, data);
 }
 
+
+
+static int
+bn_send_im(PurpleConnection *pc, 
+#if PURPLE_VERSION_CHECK(3, 0, 0)
+PurpleMessage *msg)
+{
+	const gchar *who = purple_message_get_recipient(msg);
+	const gchar *message = purple_message_get_contents(msg);
+#else
+const gchar *who, const gchar *message, PurpleMessageFlags flags)
+{
+#endif
+
+	BattleNetAccount *bna = purple_connection_get_protocol_data(pc);
+	const Bnet__Protocol__EntityId *entity_id = bn_get_buddy_entity_id(bna, who);
+	
+	if (entity_id == NULL) {
+		//TODO find entity if we haven't received it yet
+		return -1;
+	}
+	
+	bn_notification_send_whisper(bna, entity_id, message);
+	
+	return strlen(message);
+}
+
+static guint
+bn_send_typing(PurpleConnection *pc, const gchar *who, PurpleIMTypingState state)
+{
+	BattleNetAccount *bna = purple_connection_get_protocol_data(pc);
+	const Bnet__Protocol__EntityId *entity_id = bn_get_buddy_entity_id(bna, who);
+	
+	if (entity_id == NULL) {
+		//TODO find entity if we haven't received it yet
+		return 0;
+	}
+	
+	bn_notification_send_typing(bna, entity_id, (state == PURPLE_IM_TYPING));
+	
+	return 5;
+}
+
 static void
 bn_login(PurpleAccount *account)
 {
@@ -893,6 +1287,8 @@ bn_login(PurpleAccount *account)
 	bna->imported_services = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, (GDestroyNotify) bn_free_service);
 	bna->exported_services = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, (GDestroyNotify) bn_free_service);
 	
+	bna->entity_id_to_battle_tag = g_hash_table_new_full(bn_entity_id_hash, bn_entity_id_equal, g_free, g_free);
+	bna->battle_tag_to_entity_id = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
 	
 	
 	// Imported services
@@ -908,6 +1304,12 @@ bn_login(PurpleAccount *account)
 	service = bn_create_service(bna, "bnet.protocol.friends.FriendsService");
 	bna->services_to_import = g_list_append(bna->services_to_import, service);
 	
+	service = bn_create_service(bna, "bnet.protocol.notification.NotificationService");
+	bna->services_to_import = g_list_append(bna->services_to_import, service);
+	
+	service = bn_create_service(bna, "bnet.protocol.channel_invitation.ChannelInvitationService");
+	bna->services_to_import = g_list_append(bna->services_to_import, service);
+	
 	
 	// Exported services
 	service = bn_create_service(bna, "bnet.protocol.authentication.AuthenticationClient");
@@ -921,6 +1323,9 @@ bn_login(PurpleAccount *account)
 	service = bn_create_service(bna, "bnet.protocol.account.AccountNotify");
 	bna->services_to_export = g_list_append(bna->services_to_export, service);
 	
+	service = bn_create_service(bna, "bnet.protocol.account.PresenceNotify");
+	bna->services_to_export = g_list_append(bna->services_to_export, service);
+	
 	service = bn_create_service(bna, "bnet.protocol.friends.FriendsNotify");
 	bn_service_add_method(service, 1, bnet__protocol__friends__friend_notification__descriptor, bn_friends_on_add);
 	bn_service_add_method(service, 3, bnet__protocol__friends__invitation_notification__descriptor, bn_friends_on_invitation);
@@ -928,6 +1333,7 @@ bn_login(PurpleAccount *account)
 	
 	service = bn_create_service(bna, "bnet.protocol.channel.ChannelSubscriber");
 	bn_service_add_method(service, 1, bnet__protocol__channel__add_notification__descriptor, bn_channel_notify_add);
+	bn_service_add_method(service, 6, bnet__protocol__channel__update_channel_state_notification__descriptor, bn_channel_notify_update_channel_state);
 	bna->services_to_export = g_list_append(bna->services_to_export, service);
 	
 	service = bn_create_service(bna, "bnet.protocol.channel_invitation.ChannelInvitationNotify");
@@ -935,6 +1341,7 @@ bn_login(PurpleAccount *account)
 	
 	service = bn_create_service(bna, "bnet.protocol.connection.ConnectionService");
 	bn_service_add_method(service, 3, bnet__protocol__connection__echo_request__descriptor, bn_connection_handle_echo_request);
+	bn_service_add_method(service, 4, bnet__protocol__connection__disconnect_notification__descriptor, bn_connection_handle_force_disconnect_request);
 	bna->services_to_export = g_list_append(bna->services_to_export, service);
 	
 	service = bn_create_service(bna, "bnet.protocol.notification.NotificationListener");
@@ -965,6 +1372,12 @@ bn_close(PurpleConnection *pc)
 	g_return_if_fail(bna != NULL);
 	
 	if (bna->socket != NULL) purple_ssl_close(bna->socket);
+	
+	g_hash_table_remove_all(bna->entity_id_to_battle_tag);
+	g_hash_table_unref(bna->entity_id_to_battle_tag);
+	
+	g_hash_table_remove_all(bna->battle_tag_to_entity_id);
+	g_hash_table_unref(bna->battle_tag_to_entity_id);
 	
 	g_hash_table_remove_all(bna->token_callbacks);
 	g_hash_table_unref(bna->token_callbacks);
@@ -1052,8 +1465,8 @@ plugin_init(PurplePlugin *plugin)
 	// prpl_info->chat_info_defaults = bn_chat_info_defaults;
 	prpl_info->login = bn_login;
 	prpl_info->close = bn_close;
-	// prpl_info->send_im = bn_send_im;
-	// prpl_info->send_typing = bn_send_typing;
+	prpl_info->send_im = bn_send_im;
+	prpl_info->send_typing = bn_send_typing;
 	// prpl_info->join_chat = bn_join_chat;
 	// prpl_info->get_chat_name = bn_get_chat_name;
 	// prpl_info->chat_invite = bn_chat_invite;
