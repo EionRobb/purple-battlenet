@@ -1204,21 +1204,52 @@ bn_status_types(PurpleAccount *account)
 static void
 bn_set_status(PurpleAccount *account, PurpleStatus *status)
 {
-	// PurpleConnection *pc = purple_account_get_connection(account);
-	// RocketChatAccount *ya = purple_connection_get_protocol_data(pc);
+	PurpleConnection *pc = purple_account_get_connection(account);
+	BattleNetAccount *bna = purple_connection_get_protocol_data(pc);
+	const gchar *new_status = purple_status_get_id(status);
 	
-	// JsonObject *data = json_object_new();
-	// JsonArray *params = json_array_new();
+	Bnet__Protocol__Presence__UpdateRequest request = BNET__PROTOCOL__PRESENCE__UPDATE_REQUEST__INIT;
 	
-	// json_object_set_string_member(data, "msg", "method");
-	// json_object_set_string_member(data, "method", "UserPresence:setDefaultStatus");
+	Bnet__Protocol__Presence__FieldOperation away_field_operation = BNET__PROTOCOL__PRESENCE__FIELD_OPERATION__INIT;
+	Bnet__Protocol__Presence__Field away_field = BNET__PROTOCOL__PRESENCE__FIELD__INIT;
+	Bnet__Protocol__Presence__FieldKey away_key = BNET__PROTOCOL__PRESENCE__FIELD_KEY__INIT;
+	Bnet__Protocol__Attribute__Variant away_value = BNET__PROTOCOL__ATTRIBUTE__VARIANT__INIT;
 	
-	// json_array_add_string_element(params, purple_status_get_id(status));
+	Bnet__Protocol__Presence__FieldOperation busy_field_operation = BNET__PROTOCOL__PRESENCE__FIELD_OPERATION__INIT;
+	Bnet__Protocol__Presence__Field busy_field = BNET__PROTOCOL__PRESENCE__FIELD__INIT;
+	Bnet__Protocol__Presence__FieldKey busy_key = BNET__PROTOCOL__PRESENCE__FIELD_KEY__INIT;
+	Bnet__Protocol__Attribute__Variant busy_value = BNET__PROTOCOL__ATTRIBUTE__VARIANT__INIT;
 	
-	// json_object_set_array_member(data, "params", params);
-	// json_object_set_string_member(data, "id", rc_get_next_id_str(ya));
+	away_key.program = busy_key.program = 0x424e;
+	away_key.group = busy_key.group = 1;
 	
-	// rc_socket_write_json(ya, data);
+	away_key.field = 7;
+	away_value.has_bool_value = TRUE;
+	away_value.bool_value = purple_strequal(new_status, "away");
+	
+	busy_key.field = 11;
+	busy_value.has_bool_value = TRUE;
+	busy_value.bool_value = purple_strequal(new_status, "busy");
+	
+	away_field.key = &away_key;
+	away_field.value = &away_value;
+	away_field_operation.field = &away_field;
+	busy_field.key = &busy_key;
+	busy_field.value = &busy_value;
+	busy_field_operation.field = &busy_field;
+	away_field_operation.has_operation = busy_field_operation.has_operation = TRUE;
+	away_field_operation.operation = busy_field_operation.operation = BNET__PROTOCOL__PRESENCE__FIELD_OPERATION__OPERATION_TYPE__SET;
+	
+	request.n_field_operation = 2;
+	request.field_operation = g_new0(Bnet__Protocol__Presence__FieldOperation *, 2);
+	request.field_operation[0] = &away_field_operation;
+	request.field_operation[1] = &busy_field_operation;
+	
+	request.entity_id = bna->account_entity;
+	
+	bn_send_request(bna, bna->presence_service_id, 3, (ProtobufCMessage *) &request, NULL, NULL, NULL);
+	
+	g_free(request.field_operation);
 }
 
 
