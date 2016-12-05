@@ -1201,6 +1201,10 @@ bn_connection_handle_force_disconnect_request(BattleNetAccount *bna, ProtobufCMe
 {
 	Bnet__Protocol__Connection__DisconnectNotification *request = (Bnet__Protocol__Connection__DisconnectNotification *) request_in;
 	
+	if (request->error_code == 60) {
+		// logged in elsewhere
+	}
+	
 	purple_debug_error("battlenet", "Kicked off by server because of \"%s\" (%u)\n", request->reason, request->error_code);
 	purple_connection_error(bna->pc, PURPLE_CONNECTION_ERROR_OTHER_ERROR, request->reason);
 	
@@ -1270,7 +1274,9 @@ bn_notification_on_notification_received(BattleNetAccount *bna, ProtobufCMessage
 	purple_debug_info("battlenet", "Battle tag %s has high %" G_GUINT64_FORMAT " and low %" G_GUINT64_FORMAT "\n", request->sender_battle_tag, request->sender_id->high, request->sender_id->low);
 	
 	if (purple_strequal(request->type, "WHISPER")) {
-		purple_serv_got_im(bna->pc, request->sender_battle_tag, request->attribute[0]->value->string_value, PURPLE_MESSAGE_RECV, time(NULL));
+		gchar *message = purple_markup_escape_text(request->attribute[0]->value->string_value, -1);
+		purple_serv_got_im(bna->pc, request->sender_battle_tag, message, PURPLE_MESSAGE_RECV, time(NULL));
+		g_free(message);
 	} else if (purple_strequal(request->type, "TYPING")) {
 		purple_serv_got_typing(bna->pc, request->sender_battle_tag, 7, request->attribute[0]->value->bool_value ? PURPLE_TYPING : PURPLE_NOT_TYPING);
 	} else {
@@ -1376,13 +1382,19 @@ const gchar *who, const gchar *message, PurpleMessageFlags flags)
 
 	BattleNetAccount *bna = purple_connection_get_protocol_data(pc);
 	const Bnet__Protocol__EntityId *entity_id = bn_get_buddy_entity_id(bna, who);
+	gchar *stripped;
 	
 	if (entity_id == NULL) {
 		//TODO find entity if we haven't received it yet
 		return -1;
 	}
 	
-	bn_notification_send_whisper(bna, entity_id, message);
+	stripped = g_strstrip(purple_markup_strip_html(message));
+	
+	//TODO split into 256 characters (not bytes!!) messages
+	bn_notification_send_whisper(bna, entity_id, stripped);
+	
+	g_free(stripped);
 	
 	return strlen(message);
 }
