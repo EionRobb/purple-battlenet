@@ -38,6 +38,8 @@
 #define PurpleIMTypingState	                    PurpleTypingState
 #define PURPLE_IM_TYPING                        PURPLE_TYPING
 
+#define purple_notify_user_info_add_pair_html   purple_notify_user_info_add_pair
+
 #define purple_protocol_got_user_status		    purple_prpl_got_user_status
 
 #define purple_request_cpar_from_connection(a)  purple_connection_get_account(a), NULL, NULL
@@ -1428,6 +1430,25 @@ bn_status_text(PurpleBuddy *buddy)
 }
 
 static void
+bn_tooltip_text(PurpleBuddy *buddy, PurpleNotifyUserInfo *user_info, gboolean full)
+{
+	PurplePresence *presence;
+	PurpleStatus *status;
+	const gchar *message;
+	
+	g_return_if_fail(buddy != NULL);
+	
+	presence = purple_buddy_get_presence(buddy);
+	status = purple_presence_get_active_status(presence);
+	purple_notify_user_info_add_pair_html(user_info, _("Status"), purple_status_get_name(status));
+	
+	message = purple_status_get_attr_string(status, "message");
+	if (message != NULL) {
+		purple_notify_user_info_add_pair_html(user_info, _("Game"), message);
+	}
+}
+
+static void
 bn_login(PurpleAccount *account)
 {
 	BattleNetAccount *bna;
@@ -1637,6 +1658,7 @@ plugin_init(PurplePlugin *plugin)
 	// prpl_info->set_chat_topic = bn_chat_set_topic;
 	// prpl_info->add_buddy = bn_add_buddy;
 	prpl_info->status_text = bn_status_text;
+	prpl_info->tooltip_text = bn_tooltip_text;
 	
 	// prpl_info->roomlist_get_list = bn_roomlist_get_list;
 	// prpl_info->roomlist_room_serialize = bn_roomlist_serialize;
@@ -1752,6 +1774,8 @@ static void
 bn_protocol_client_iface_init(PurpleProtocolClientIface *prpl_info)
 {
 	prpl_info->get_account_text_table = bn_get_account_text_table;
+	prpl_info->status_text = bn_status_text;
+	prpl_info->tooltip_text = bn_tooltip_text;
 }
 
 static void 
