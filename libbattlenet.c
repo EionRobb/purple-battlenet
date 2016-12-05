@@ -846,6 +846,43 @@ bn_challenge_on_external_challenge(BattleNetAccount *bna, ProtobufCMessage *requ
 }
 
 static void
+bn_dump_field_data(Bnet__Protocol__Presence__Field *field)
+{
+	Bnet__Protocol__Attribute__Variant *value = field->value;
+	gchar *program_str = g_new0(gchar, 10);
+	guint program_pos = 8;
+	guint program_int = field->key->program;
+	
+	while(program_int && program_pos) {
+		program_str[program_pos--] = program_int & 0xFF;
+		program_int = program_int >> 16;
+	}
+	
+	purple_debug_info("battlenet", "Program: %x %s, Group: %u, Field: %u = ", field->key->program, &program_str[program_pos+1], field->key->group, field->key->field);
+	
+	if (value->has_bool_value)
+		purple_debug_info("battlenet", "bool: %d, ", value->bool_value);
+	if (value->has_int_value)
+		purple_debug_info("battlenet", "int: %" G_GINT64_FORMAT ", ", value->int_value);
+	if (value->has_float_value)
+		purple_debug_info("battlenet", "float: %f, ", value->float_value);
+	if (value->string_value)
+		purple_debug_info("battlenet", "string: %s, ", value->string_value);
+	if (value->has_blob_value)
+		purple_debug_info("battlenet", "blob: %*s, ", value->blob_value.len, value->blob_value.data);
+	if (value->has_message_value)
+		purple_debug_info("battlenet", "message: %*s, ", value->message_value.len, value->message_value.data);
+	if (value->fourcc_value)
+		purple_debug_info("battlenet", "fourcc: %s, ", value->fourcc_value);
+	if (value->has_uint_value)
+		purple_debug_info("battlenet", "uint: %" G_GUINT64_FORMAT ", ", value->uint_value);
+	if (value->entityid_value)
+		purple_debug_info("battlenet", "entity_id high: %" G_GUINT64_FORMAT ", low: %" G_GUINT64_FORMAT ", ", value->entityid_value->high, value->entityid_value->low);
+	
+	purple_debug_info("battlenet", "\n");
+}
+
+static void
 bn_channel_update_presence(BattleNetAccount *bna, Bnet__Protocol__EntityId *entity_id, size_t n_field_operation, Bnet__Protocol__Presence__FieldOperation **field_operation)
 {
 	guint i;
@@ -855,8 +892,11 @@ bn_channel_update_presence(BattleNetAccount *bna, Bnet__Protocol__EntityId *enti
 	gboolean is_away = FALSE;
 	gboolean is_online = FALSE;
 	gboolean is_busy = FALSE;
+	gboolean status_changed = FALSE;
 	gint64 away_time = 0;
 	const gchar *in_game = NULL;
+	const gchar *rich_presence = NULL;
+	Bnet__Protocol__EntityId *conv_entity_id = NULL;
 	
 	for (i = 0; i < n_field_operation; i++) {
 		Bnet__Protocol__Presence__FieldOperation *fo = field_operation[i];
@@ -874,6 +914,11 @@ bn_channel_update_presence(BattleNetAccount *bna, Bnet__Protocol__EntityId *enti
 							//full name
 							full_name = fo->field->value->string_value;
 						} break;
+						case 3: {
+							// game account
+							purple_debug_info("battlenet", "game account entity_id high %" G_GUINT64_FORMAT " and low %" G_GUINT64_FORMAT "\n", entity_id->high, entity_id->low);
+							bn_presence_subscribe(bna, fo->field->value->entityid_value);
+						} break;
 						case 4: {
 							//battle tag
 							battle_tag = fo->field->value->string_value;
@@ -881,11 +926,19 @@ bn_channel_update_presence(BattleNetAccount *bna, Bnet__Protocol__EntityId *enti
 						case 6: {
 							// last online
 							last_online = fo->field->value->int_value;
+							purple_debug_info("battlenet", "last online %" G_GINT64_FORMAT "\n", last_online);
+							if ((last_online / 1000000) >= time(NULL) - 1) {
+								//is_online = TRUE;
+							} else {
+								//is_online = FALSE;
+							}
 						} break;
 						case 7: {
 							// away
 							is_away = fo->field->value->bool_value;
-							is_online = !fo->field->value->bool_value;
+							is_online = !is_away;
+							status_changed = TRUE;
+							bn_dump_field_data(fo->field);
 						} break;
 						case 8: {
 							// away time
@@ -894,10 +947,13 @@ bn_channel_update_presence(BattleNetAccount *bna, Bnet__Protocol__EntityId *enti
 						case 11: {
 							// dnd
 							is_busy = fo->field->value->bool_value;
-							is_online = !fo->field->value->bool_value;
+							is_online = !is_busy;
+							status_changed = TRUE;
+							bn_dump_field_data(fo->field);
 						} break;
 						default: {
 							purple_debug_error("battlenet", "Unknown presence field %d for group 1\n", fo->field->key->field);
+							bn_dump_field_data(fo->field);
 						}
 					}
 				} break;
@@ -908,15 +964,24 @@ bn_channel_update_presence(BattleNetAccount *bna, Bnet__Protocol__EntityId *enti
 						case 1: {
 							//account online
 							is_online = fo->field->value->bool_value;
+							status_changed = TRUE;
+							bn_dump_field_data(fo->field);
 						} break;
 						case 2: {
 							// busy
 							is_busy = fo->field->value->bool_value;
-							is_online = !fo->field->value->bool_value;
+							is_online = !is_busy;
+							status_changed = TRUE;
+							bn_dump_field_data(fo->field);
 						} break;
 						case 3: {
 							//program
-							in_game = fo->field->value->string_value;
+							in_game = fo->field->value->fourcc_value;
+							bn_dump_field_data(fo->field);
+							if (purple_strequal(in_game, "Pro")) {
+								in_game = "Overwatch";
+							}
+							status_changed = TRUE;
 						} break;
 						case 4: {
 							// last online
@@ -932,37 +997,80 @@ bn_channel_update_presence(BattleNetAccount *bna, Bnet__Protocol__EntityId *enti
 						} break;
 						case 7: {
 							// account id
+							purple_debug_info("battlenet", "Old entity_id high %" G_GUINT64_FORMAT " and low %" G_GUINT64_FORMAT "\n", entity_id->high, entity_id->low);
+							conv_entity_id = entity_id;
 							entity_id = fo->field->value->entityid_value;
+						} break;
+						case 8: {
+							// rich_presence
+							ProtobufCBinaryData presence_message = fo->field->value->message_value;
+							gchar *presence_str = g_new0(gchar, 4 * presence_message.len + 1);
+							gint j, pos;
+							// \r o r P \000 \025 a o r p \030 \025
+							// \r p p A \000 \025 s r p r \030 \000
+							for (j = presence_message.len - 1, pos = 0; j >= 0; j--) {
+								guchar c = presence_message.data[j];
+								if (c < 0x1F || c > 0x7E) {
+									presence_str[pos++] = '\\';
+									presence_str[pos++] = '0' + (((c) >> 6) & 07);
+									presence_str[pos++] = '0' + (((c) >> 3) & 07);
+									presence_str[pos++] = '0' + ((c) & 07);
+								} else {
+									presence_str[pos++] = presence_message.data[j];
+								}
+							}
+							purple_debug_misc("battlenet", "Presence %s\n", presence_str);
+							g_free(presence_str);
+						} break;
+						case 10: {
+							// afk
+							is_away = fo->field->value->bool_value;
+							is_online = !is_away;
+							status_changed = TRUE;
+							bn_dump_field_data(fo->field);
 						} break;
 						default: {
 							purple_debug_error("battlenet", "Unknown presence field %d for group 2\n", fo->field->key->field);
+							bn_dump_field_data(fo->field);
 						}
 					}
 				} break;
 				
 				default:
 					purple_debug_error("battlenet", "Unknown presence key group %d\n", fo->field->key->group);
+					bn_dump_field_data(fo->field);
 					break;
 			}
 		} else {
 			purple_debug_error("battlenet", "Unknown presence program %x\n", fo->field->key->program);
+			bn_dump_field_data(fo->field);
 		}
 	}
 	
 	purple_debug_info("battlenet", "Battle tag %s has high %" G_GUINT64_FORMAT " and low %" G_GUINT64_FORMAT "\n", battle_tag, entity_id->high, entity_id->low);
 	//TODO this entity_id is wrong for this battle_tag
-	//bn_add_buddy_internal(bna, entity_id, battle_tag, full_name);
-	(void) full_name;
+	if (conv_entity_id && battle_tag) {
+		bn_add_buddy_internal(bna, conv_entity_id, battle_tag, full_name);
+	}
 	
+	if (battle_tag && !g_hash_table_lookup(bna->entity_id_to_battle_tag, entity_id)) {
+		// Save for lookup later, but only one way - these aren't conversation entities
+		g_hash_table_insert(bna->entity_id_to_battle_tag, bn_copy_entity_id(entity_id), g_strdup(battle_tag));
+	}
 	
-	if (is_online) {
-		purple_protocol_got_user_status(bna->account, battle_tag, "online", NULL);
-	} else if (is_away) {
-		purple_protocol_got_user_status(bna->account, battle_tag, "away", NULL);
-	}  else if (is_busy) {
-		purple_protocol_got_user_status(bna->account, battle_tag, "busy", NULL);
-	} else {
-		purple_protocol_got_user_status(bna->account, battle_tag, "offline", NULL);
+	rich_presence = in_game;
+	
+	if (battle_tag != NULL && status_changed == TRUE) {
+		if (is_away) {
+			purple_protocol_got_user_status(bna->account, battle_tag, "away", "message", rich_presence, NULL);
+		} else if (is_busy) {
+			purple_protocol_got_user_status(bna->account, battle_tag, "busy", "message", rich_presence, NULL);
+		} else if (is_online) {
+			//TODO this isn't reliable :s
+			purple_protocol_got_user_status(bna->account, battle_tag, "online", "message", rich_presence, NULL);
+		} else {
+			purple_protocol_got_user_status(bna->account, battle_tag, "offline", NULL);
+		}
 	}
 	
 	//TODO
@@ -1186,16 +1294,16 @@ bn_status_types(PurpleAccount *account)
 	GList *types = NULL;
 	PurpleStatusType *status;
 
-	status = purple_status_type_new_full(PURPLE_STATUS_AVAILABLE, "online", "Online", TRUE, TRUE, FALSE);
+	status = purple_status_type_new_with_attrs(PURPLE_STATUS_AVAILABLE, "online", "Online", TRUE, TRUE, FALSE, "message", "Presence", purple_value_new(PURPLE_TYPE_STRING), NULL);
 	types = g_list_append(types, status);
 
-	status = purple_status_type_new_full(PURPLE_STATUS_AWAY, "away", "Away", TRUE, TRUE, FALSE);
+	status = purple_status_type_new_with_attrs(PURPLE_STATUS_AWAY, "away", "Away", TRUE, TRUE, FALSE, "message", "Presence", purple_value_new(PURPLE_TYPE_STRING), NULL);
 	types = g_list_append(types, status);
 
-	status = purple_status_type_new_full(PURPLE_STATUS_UNAVAILABLE, "busy", "Busy", TRUE, TRUE, FALSE);
+	status = purple_status_type_new_with_attrs(PURPLE_STATUS_UNAVAILABLE, "busy", "Busy", TRUE, TRUE, FALSE, "message", "Presence", purple_value_new(PURPLE_TYPE_STRING), NULL);
 	types = g_list_append(types, status);
 	
-	status = purple_status_type_new_full(PURPLE_STATUS_OFFLINE, NULL, "Offline", TRUE, TRUE, FALSE);
+	status = purple_status_type_new_full(PURPLE_STATUS_OFFLINE, "offline", "Offline", TRUE, TRUE, FALSE);
 	types = g_list_append(types, status);
 	
 	return types;
@@ -1293,6 +1401,18 @@ bn_send_typing(PurpleConnection *pc, const gchar *who, PurpleIMTypingState state
 	bn_notification_send_typing(bna, entity_id, (state == PURPLE_IM_TYPING));
 	
 	return 5;
+}
+
+static gchar *
+bn_status_text(PurpleBuddy *buddy)
+{
+	const gchar *message = purple_status_get_attr_string(purple_presence_get_active_status(purple_buddy_get_presence(buddy)), "message");
+	
+	if (message == NULL) {
+		return NULL;
+	}
+	
+	return g_markup_printf_escaped("%s", message);
 }
 
 static void
@@ -1504,6 +1624,7 @@ plugin_init(PurplePlugin *plugin)
 	// prpl_info->chat_send = bn_chat_send;
 	// prpl_info->set_chat_topic = bn_chat_set_topic;
 	// prpl_info->add_buddy = bn_add_buddy;
+	prpl_info->status_text = bn_status_text;
 	
 	// prpl_info->roomlist_get_list = bn_roomlist_get_list;
 	// prpl_info->roomlist_room_serialize = bn_roomlist_serialize;
