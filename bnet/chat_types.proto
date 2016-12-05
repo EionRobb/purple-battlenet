@@ -8,7 +8,7 @@ message ChannelState {
 	optional fixed32 locale = 3;
 	optional bool public = 4 [default = false];
 	optional uint32 bucket_index = 5;
-	extend .bnet.protocol.channel.ChannelState {
-		optional ChannelState chat = 100;
-	}
+	// extend .bnet.protocol.channel.ChannelState {
+		// optional ChannelState chat = 100;
+	// }
 }

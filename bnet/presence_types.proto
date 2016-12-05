@@ -1,6 +1,6 @@
 package bnet.protocol.presence;
 import "bnet/attribute.proto";
-import "bnet/channel_types.proto";
+//import "bnet/channel_types.proto";
 import "bnet/entity.proto";
 
 
@@ -36,7 +36,7 @@ message ChannelState {
 	optional EntityId entity_id = 1;
 	repeated FieldOperation field_operation = 2;
 	optional bool healing = 3 [default = false];
-	extend .bnet.protocol.channel.ChannelState {
-		optional ChannelState presence = 101;
-	}
+	// extend .bnet.protocol.channel.ChannelState {
+		// optional ChannelState presence = 101;
+	// }
 }
