@@ -60,6 +60,7 @@ typedef struct {
 	PurpleAccount *account;
 	PurpleConnection *pc;
 	PurpleSslConnection *socket;
+	guint login_attempt;
 	
 	guchar *frame_header;
 	gsize frame_header_len;
@@ -807,7 +808,14 @@ bn_auth_verify_web_credentials(BattleNetAccount *bna, const gchar *auth_url)
 	Bnet__Protocol__Authentication__VerifyWebCredentialsRequest verify_request = BNET__PROTOCOL__AUTHENTICATION__VERIFY_WEB_CREDENTIALS_REQUEST__INIT;
 	const gchar *web_credentials = purple_account_get_string(bna->account, "web_credentials", NULL);
 	
+	bna->login_attempt++;
+	if (bna->login_attempt == 3) {
+		web_credentials = NULL;
+		purple_account_set_string(bna->account, "web_credentials", NULL);
+	}
+	
 	if (web_credentials == NULL && auth_url != NULL) {
+		purple_notify_uri(bna->pc, auth_url);
 		purple_request_input(bna->pc, _("Authorization Code"), auth_url,
 			_ ("Please follow the URL to get the ST= info header and paste here"),
 			_ ("US-"), FALSE, FALSE, NULL, 
@@ -1245,7 +1253,8 @@ bn_connection_handle_force_disconnect_request(BattleNetAccount *bna, ProtobufCMe
 	Bnet__Protocol__Connection__DisconnectNotification *request = (Bnet__Protocol__Connection__DisconnectNotification *) request_in;
 	
 	if (request->error_code == 60) {
-		// logged in elsewhere
+		purple_connection_error(bna->pc, PURPLE_CONNECTION_ERROR_OTHER_ERROR, "Logged in elsewhere");
+		return NULL;
 	}
 	
 	purple_debug_error("battlenet", "Kicked off by server because of \"%s\" (%u)\n", request->reason, request->error_code);
