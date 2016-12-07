@@ -81,6 +81,7 @@ typedef struct {
 	guint32 friends_service_id;
 	guint32 channel_invitation_service_id;
 	guint32 notify_service_id;
+	guint32 resources_service_id;
 	
 	guint next_token;
 	guint next_object_id;
@@ -567,6 +568,8 @@ bn_on_connect(BattleNetAccount *bna, ProtobufCMessage *body, gpointer user_data)
 			bna->notify_service_id = service_id;
 		} else if (purple_strequal(service->name, "bnet.protocol.channel_invitation.ChannelInvitationService")) {
 			bna->channel_invitation_service_id = service_id;
+		} else if (purple_strequal(service->name, "bnet.protocol.resources.Resources")) {
+			bna->resources_service_id = service_id;
 		}
 	}
 	
@@ -924,6 +927,8 @@ bn_dump_field_data(Bnet__Protocol__Presence__Field *field)
 	purple_debug_info("battlenet", "\n");
 }
 
+static void bn_resources_lookup_resource(BattleNetAccount *bna, const gchar *program_id, const gchar *stream_id);
+
 static void
 bn_channel_update_presence(BattleNetAccount *bna, Bnet__Protocol__EntityId *entity_id, size_t n_field_operation, Bnet__Protocol__Presence__FieldOperation **field_operation)
 {
@@ -1045,6 +1050,8 @@ bn_channel_update_presence(BattleNetAccount *bna, Bnet__Protocol__EntityId *enti
 							// rich_presence
 							ProtobufCBinaryData presence_message = fo->field->value->message_value;
 							gchar *presence_str = g_new0(gchar, 4 * presence_message.len + 1);
+							gchar *program, *stream;
+							guint message_id;
 							gint j, pos;
 							// \r o r P \000 \025 a o r p \030 \025
 							// \r p p A \000 \025 s r p r \030 \000
@@ -1061,6 +1068,19 @@ bn_channel_update_presence(BattleNetAccount *bna, Bnet__Protocol__EntityId *enti
 							}
 							purple_debug_misc("battlenet", "Presence %s\n", presence_str);
 							g_free(presence_str);
+							
+							if (presence_message.len == 12) {
+								program = g_strreverse(g_strndup((gchar *) &presence_message.data[1], 4));
+								stream = g_strreverse(g_strndup((gchar *) &presence_message.data[6], 4));
+								message_id = presence_message.data[11];
+								
+								//TODO look up game name using message_id and program
+								(void) message_id;
+								bn_resources_lookup_resource(bna, program, stream);
+								
+								g_free(program);
+								g_free(stream);
+							}
 						} break;
 						case 10: {
 							// afk
@@ -1261,6 +1281,45 @@ bn_connection_handle_force_disconnect_request(BattleNetAccount *bna, ProtobufCMe
 	purple_connection_error(bna->pc, PURPLE_CONNECTION_ERROR_OTHER_ERROR, request->reason);
 	
 	return NULL;
+}
+
+static void
+bn_resources_content_handle_callback(BattleNetAccount *bna, ProtobufCMessage *body, gpointer user_data)
+{
+	Bnet__Protocol__ContentHandle *response = (Bnet__Protocol__ContentHandle *) body;
+	gchar *hash = g_new0(gchar, 65);
+	guint i;
+	gchar *url;
+	gchar *region = g_strdup(bn_int_to_fourcc(response->region));
+	gchar *usage = g_strdup(bn_int_to_fourcc(response->usage));
+	
+	for (i = 0; i < 32; i++) {
+		sprintf(&hash[i * 2], "%02x", response->hash.data[i]);
+	}
+	
+	url = g_strdup_printf("http://%s.depot.battle.net:1119/%s.%s", region, hash, usage);
+	
+	purple_debug_info("battlenet", "depot content might be at %s\n", url);
+	
+	//purple_debug_info("battlenet", "content handle response: proto url %s\nregion %u\nusage %u\nhash: %*s", response->proto_url, response->region, response->usage, response->hash.len, response->hash.data);
+	
+	g_free(region);
+	g_free(usage);
+	g_free(url);
+	g_free(hash);
+}
+
+static void
+bn_resources_lookup_resource(BattleNetAccount *bna, const gchar *program_id, const gchar *stream_id)
+{
+	Bnet__Protocol__Resources__ContentHandleRequest request = BNET__PROTOCOL__RESOURCES__CONTENT_HANDLE_REQUEST__INIT;
+	
+	request.program_id = bn_fourcc_to_int(program_id, -1);
+	request.stream_id = bn_fourcc_to_int(stream_id, -1);
+	
+	purple_debug_info("battlenet", "looking up resource program: %x stream: %x\n", request.program_id, request.stream_id);
+	
+	bn_send_request(bna, bna->resources_service_id, 1, (ProtobufCMessage *) &request, bn_resources_content_handle_callback, &bnet__protocol__content_handle__descriptor, NULL);
 }
 
 static void
@@ -1588,6 +1647,9 @@ bn_login(PurpleAccount *account)
 	bna->services_to_import = g_list_append(bna->services_to_import, service);
 	
 	service = bn_create_service(bna, "bnet.protocol.notification.NotificationService");
+	bna->services_to_import = g_list_append(bna->services_to_import, service);
+	
+	service = bn_create_service(bna, "bnet.protocol.resources.Resources");
 	bna->services_to_import = g_list_append(bna->services_to_import, service);
 	
 	service = bn_create_service(bna, "bnet.protocol.channel_invitation.ChannelInvitationService");
