@@ -14,7 +14,7 @@ Run the following commands from a terminal
 ```
 #!sh
 sudo apt-get install libpurple-dev libglib2.0-dev libprotobuf-c-dev protobuf-c-compiler mercurial make;
-hg clone https://bitbucket.org/EionRobb/purple-hangouts/ && cd purple-hangouts;
+hg clone https://bitbucket.org/EionRobb/purple-battlenet/ && cd purple-battlenet;
 make && sudo make install
 ```
 
