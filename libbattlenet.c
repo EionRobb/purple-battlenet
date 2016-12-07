@@ -21,6 +21,7 @@
 #include "bnet/friends_service.pb-c.h"
 #include "bnet/channel_service.pb-c.h"
 #include "bnet/channel_invitation_service.pb-c.h"
+#include "bnet/resource_service.pb-c.h"
 
 #define BATTLENET_PLUGIN_ID "prpl-eionrobb-battlenet"
 #define BATTLENET_PLUGIN_WEBSITE "https://bitbucket.org/EionRobb/purple-battlenet/overview"
@@ -28,24 +29,25 @@
 
 #if !PURPLE_VERSION_CHECK(3, 0, 0)
 
-#define purple_blist_find_group                 purple_find_group
-#define purple_blist_find_buddy                 purple_find_buddy
-                                              
-#define purple_connection_error                 purple_connection_error_reason
-#define PURPLE_CONNECTION_CONNECTING            PURPLE_CONNECTING
-#define PURPLE_CONNECTION_CONNECTED             PURPLE_CONNECTED
+#define purple_blist_find_group                   purple_find_group
+#define purple_blist_find_buddy                   purple_find_buddy
+                                                 
+#define purple_connection_error                   purple_connection_error_reason
+#define PURPLE_CONNECTION_CONNECTING              PURPLE_CONNECTING
+#define PURPLE_CONNECTION_CONNECTED               PURPLE_CONNECTED
+                                                 
+#define PurpleIMTypingState	                      PurpleTypingState
+#define PURPLE_IM_TYPING                          PURPLE_TYPING
+                                                 
+#define purple_notify_user_info_add_pair_html     purple_notify_user_info_add_pair
+                                                 
+#define purple_protocol_got_user_status		      purple_prpl_got_user_status
+#define purple_protocol_got_user_status_deactive  purple_prpl_got_user_status_deactive
 
-#define PurpleIMTypingState	                    PurpleTypingState
-#define PURPLE_IM_TYPING                        PURPLE_TYPING
-
-#define purple_notify_user_info_add_pair_html   purple_notify_user_info_add_pair
-
-#define purple_protocol_got_user_status		    purple_prpl_got_user_status
-
-#define purple_request_cpar_from_connection(a)  purple_connection_get_account(a), NULL, NULL
-
-#define purple_serv_got_im                      serv_got_im
-#define purple_serv_got_typing                  serv_got_typing
+#define purple_request_cpar_from_connection(a)    purple_connection_get_account(a), NULL, NULL
+                                                  
+#define purple_serv_got_im                        serv_got_im
+#define purple_serv_got_typing                    serv_got_typing
 
 #endif
 
@@ -847,20 +849,50 @@ bn_challenge_on_external_challenge(BattleNetAccount *bna, ProtobufCMessage *requ
 	return NULL;
 }
 
+static guint64
+bn_fourcc_to_int(const gchar *fourcc, gssize len)
+{
+	guint64 out = 0;
+	gint i;
+	
+	if (len < 0) {
+		len = MIN(strlen(fourcc), 4);
+	}
+	
+	for (i = 0; i < len; i++) {
+		out = (out << 8) | (fourcc[i] & 0xFF);
+	}
+	
+	return out;
+}
+
+static const gchar *
+bn_int_to_fourcc(guint64 in)
+{
+	static gchar *fourcc = NULL;
+	gint pos = 3;
+	
+	if (fourcc == NULL) {
+		fourcc = g_new0(gchar, 5);
+	} else {
+		memset(fourcc, 0, sizeof(gchar) * 5);
+	}
+	
+	while (in && pos >= 0) {
+		fourcc[pos--] = in & 0xFF;
+		in = in >> 8;
+	}
+	
+	return &fourcc[pos + 1];
+}
+
 static void
 bn_dump_field_data(Bnet__Protocol__Presence__Field *field)
 {
 	Bnet__Protocol__Attribute__Variant *value = field->value;
-	gchar *program_str = g_new0(gchar, 10);
-	guint program_pos = 8;
-	guint program_int = field->key->program;
+	const gchar *program_str = bn_int_to_fourcc(field->key->program);
 	
-	while(program_int && program_pos) {
-		program_str[program_pos--] = program_int & 0xFF;
-		program_int = program_int >> 16;
-	}
-	
-	purple_debug_info("battlenet", "Program: %x %s, Group: %u, Field: %u = ", field->key->program, &program_str[program_pos+1], field->key->group, field->key->field);
+	purple_debug_info("battlenet", "Program: 0x%x %s, Group: %u, Field: %u = ", field->key->program, program_str, field->key->group, field->key->field);
 	
 	if (value->has_bool_value)
 		purple_debug_info("battlenet", "bool: %d, ", value->bool_value);
@@ -895,6 +927,8 @@ bn_channel_update_presence(BattleNetAccount *bna, Bnet__Protocol__EntityId *enti
 	gboolean is_online = FALSE;
 	gboolean is_busy = FALSE;
 	gboolean status_changed = FALSE;
+	gboolean away_changed = FALSE;
+	gboolean busy_changed = FALSE;
 	gint64 away_time = 0;
 	const gchar *in_game = NULL;
 	const gchar *rich_presence = NULL;
@@ -938,8 +972,7 @@ bn_channel_update_presence(BattleNetAccount *bna, Bnet__Protocol__EntityId *enti
 						case 7: {
 							// away
 							is_away = fo->field->value->bool_value;
-							is_online = !is_away;
-							status_changed = TRUE;
+							away_changed = TRUE;
 							bn_dump_field_data(fo->field);
 						} break;
 						case 8: {
@@ -949,8 +982,7 @@ bn_channel_update_presence(BattleNetAccount *bna, Bnet__Protocol__EntityId *enti
 						case 11: {
 							// dnd
 							is_busy = fo->field->value->bool_value;
-							is_online = !is_busy;
-							status_changed = TRUE;
+							busy_changed = TRUE;
 							bn_dump_field_data(fo->field);
 						} break;
 						default: {
@@ -972,14 +1004,12 @@ bn_channel_update_presence(BattleNetAccount *bna, Bnet__Protocol__EntityId *enti
 						case 2: {
 							// busy
 							is_busy = fo->field->value->bool_value;
-							is_online = !is_busy;
-							status_changed = TRUE;
+							busy_changed = TRUE;
 							bn_dump_field_data(fo->field);
 						} break;
 						case 3: {
 							//program
 							in_game = fo->field->value->fourcc_value;
-							bn_dump_field_data(fo->field);
 							if (purple_strequal(in_game, "Pro")) {
 								in_game = "Overwatch";
 							}
@@ -1027,8 +1057,7 @@ bn_channel_update_presence(BattleNetAccount *bna, Bnet__Protocol__EntityId *enti
 						case 10: {
 							// afk
 							is_away = fo->field->value->bool_value;
-							is_online = !is_away;
-							status_changed = TRUE;
+							away_changed = TRUE;
 							bn_dump_field_data(fo->field);
 						} break;
 						default: {
@@ -1062,16 +1091,28 @@ bn_channel_update_presence(BattleNetAccount *bna, Bnet__Protocol__EntityId *enti
 	
 	rich_presence = in_game;
 	
-	if (battle_tag != NULL && status_changed == TRUE) {
-		if (is_away) {
-			purple_protocol_got_user_status(bna->account, battle_tag, "away", "message", rich_presence, NULL);
-		} else if (is_busy) {
-			purple_protocol_got_user_status(bna->account, battle_tag, "busy", "message", rich_presence, NULL);
-		} else if (is_online) {
-			//TODO this isn't reliable :s
-			purple_protocol_got_user_status(bna->account, battle_tag, "online", "message", rich_presence, NULL);
-		} else {
-			purple_protocol_got_user_status(bna->account, battle_tag, "offline", NULL);
+	if (battle_tag != NULL) {
+		if (status_changed == TRUE) {
+			if (is_online) {
+				//TODO this isn't reliable :s
+				purple_protocol_got_user_status(bna->account, battle_tag, "online", "message", rich_presence, NULL);
+			} else {
+				purple_protocol_got_user_status(bna->account, battle_tag, "offline", NULL);
+			}
+		}
+		if (away_changed == TRUE) {
+			if (is_away) {
+				purple_protocol_got_user_status(bna->account, battle_tag, "away", NULL);
+			} else {
+				purple_protocol_got_user_status_deactive(bna->account, battle_tag, "away");
+			}
+		}
+		if (busy_changed == TRUE) {
+			if (is_busy) {
+				purple_protocol_got_user_status(bna->account, battle_tag, "busy", NULL);
+			} else {
+				purple_protocol_got_user_status_deactive(bna->account, battle_tag, "busy");
+			}
 		}
 	}
 	
@@ -1305,10 +1346,10 @@ bn_status_types(PurpleAccount *account)
 	status = purple_status_type_new_with_attrs(PURPLE_STATUS_AVAILABLE, "online", "Online", TRUE, TRUE, FALSE, "message", "Presence", purple_value_new(PURPLE_TYPE_STRING), NULL);
 	types = g_list_append(types, status);
 
-	status = purple_status_type_new_with_attrs(PURPLE_STATUS_AWAY, "away", "Away", TRUE, TRUE, FALSE, "message", "Presence", purple_value_new(PURPLE_TYPE_STRING), NULL);
+	status = purple_status_type_new_with_attrs(PURPLE_STATUS_AWAY, "away", "Away", TRUE, TRUE, TRUE, "message", "Presence", purple_value_new(PURPLE_TYPE_STRING), NULL);
 	types = g_list_append(types, status);
 
-	status = purple_status_type_new_with_attrs(PURPLE_STATUS_UNAVAILABLE, "busy", "Busy", TRUE, TRUE, FALSE, "message", "Presence", purple_value_new(PURPLE_TYPE_STRING), NULL);
+	status = purple_status_type_new_with_attrs(PURPLE_STATUS_UNAVAILABLE, "busy", "Busy", TRUE, TRUE, TRUE, "message", "Presence", purple_value_new(PURPLE_TYPE_STRING), NULL);
 	types = g_list_append(types, status);
 	
 	status = purple_status_type_new_full(PURPLE_STATUS_OFFLINE, "offline", "Offline", TRUE, TRUE, FALSE);
