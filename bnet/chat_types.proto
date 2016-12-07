@@ -1,5 +1,5 @@
 package bnet.protocol.chat;
-import "bnet/channel_types.proto";
+// import "bnet/channel_types.proto";
 
 
 message ChannelState {

@@ -1338,6 +1338,55 @@ bn_notification_on_notification_received(BattleNetAccount *bna, ProtobufCMessage
 	return NULL;
 }
 
+static void
+bn_friends_send_friend_invite(BattleNetAccount *bna, const gchar *who, const gchar *message)
+{
+	Bnet__Protocol__Invitation__SendInvitationRequest request = BNET__PROTOCOL__INVITATION__SEND_INVITATION_REQUEST__INIT;
+	Bnet__Protocol__Invitation__InvitationParams params = BNET__PROTOCOL__INVITATION__INVITATION_PARAMS__INIT;
+	Bnet__Protocol__Friends__FriendInvitationParams friend_params = BNET__PROTOCOL__FRIENDS__FRIEND_INVITATION_PARAMS__INIT;
+	Bnet__Protocol__EntityId entity_id = BNET__PROTOCOL__ENTITY_ID__INIT;
+	guint32 role;
+	
+	request.target_id = &entity_id;
+	
+	if (strchr(who, '@') != NULL) {
+		friend_params.target_email = (gchar *) who;
+		role = 2;
+	} else {
+		friend_params.target_battle_tag = (gchar *) who;
+		role = 1;
+	}
+	friend_params.n_role = 1;
+	friend_params.role = &role;
+	
+	params.friend_params = &friend_params;
+	params.invitation_message = (gchar *) message;
+	request.params = &params;
+	
+	bn_send_request(bna, bna->friends_service_id, 2, (ProtobufCMessage *) &request, NULL, NULL, NULL);
+}
+
+static void
+bn_add_buddy_with_invite(PurpleConnection *pc, PurpleBuddy *buddy, PurpleGroup *group, const gchar *message)
+{
+	BattleNetAccount *bna = purple_connection_get_protocol_data(pc);
+	const gchar *who = purple_buddy_get_name(buddy);
+	
+	bn_friends_send_friend_invite(bna, who, message);
+	
+	// If we added an email address or a not-battle tag, remove it until it comes back magically later
+	if (strchr(who, '@') != NULL || strchr(who, '#') == NULL) {
+		purple_blist_remove_buddy(buddy);
+	}
+}
+
+#if !PURPLE_VERSION_CHECK(3, 0, 0)
+static void
+bn_add_buddy(PurpleConnection *pc, PurpleBuddy *buddy, PurpleGroup *group)
+{
+	bn_add_buddy_with_invite(pc, buddy, group, NULL);
+}
+#endif
 
 
 static const char *
@@ -1677,7 +1726,7 @@ plugin_init(PurplePlugin *plugin)
 		prpl_info->struct_size = sizeof(PurplePluginProtocolInfo);
 	#endif
 	#if PURPLE_MINOR_VERSION >= 8
-		//prpl_info->add_buddy_with_invite = bn_add_buddy_with_invite;
+		prpl_info->add_buddy_with_invite = bn_add_buddy_with_invite;
 	#endif
 	
 	prpl_info->options = OPT_PROTO_CHAT_TOPIC | OPT_PROTO_SLASH_COMMANDS_NATIVE;
@@ -1706,7 +1755,7 @@ plugin_init(PurplePlugin *plugin)
 	// prpl_info->chat_invite = bn_chat_invite;
 	// prpl_info->chat_send = bn_chat_send;
 	// prpl_info->set_chat_topic = bn_chat_set_topic;
-	// prpl_info->add_buddy = bn_add_buddy;
+	prpl_info->add_buddy = bn_add_buddy;
 	prpl_info->status_text = bn_status_text;
 	prpl_info->tooltip_text = bn_tooltip_text;
 	
@@ -1815,7 +1864,7 @@ bn_protocol_chat_iface_init(PurpleProtocolChatIface *prpl_info)
 static void 
 bn_protocol_server_iface_init(PurpleProtocolServerIface *prpl_info)
 {
-	prpl_info->add_buddy = bn_add_buddy;
+	prpl_info->add_buddy = bn_add_buddy_with_invite;
 	prpl_info->set_status = bn_set_status;
 	prpl_info->set_idle = bn_set_idle;
 }

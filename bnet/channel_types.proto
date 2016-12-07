@@ -57,7 +57,7 @@ message ChannelState {
 	optional bnet.protocol.channel.ChannelState channel = 100;
 	optional bnet.protocol.presence.ChannelState presence = 101;
 	
-	extensions 102 to 10000;
+	// extensions 102 to 10000;
 }
 
 message MemberState {

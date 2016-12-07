@@ -1,7 +1,6 @@
 package bnet.protocol.friends;
 import "bnet/attribute.proto";
 import "bnet/entity.proto";
-import "bnet/invitation_types.proto";
 
 
 message Friend {
@@ -17,9 +16,9 @@ message Friend {
 message FriendInvitation {
 	optional bool first_received = 1 [default = false];
 	repeated uint32 role = 2 [packed = true];
-	extend .bnet.protocol.invitation.Invitation {
-		optional FriendInvitation friend_invite = 103;
-	}
+	// extend .bnet.protocol.invitation.Invitation {
+		// optional FriendInvitation friend_invite = 103;
+	// }
 }
 
 message FriendInvitationParams {
@@ -29,7 +28,7 @@ message FriendInvitationParams {
 	optional string inviter_full_name = 4;
 	optional string invitee_display_name = 5;
 	repeated uint32 role = 6 [packed = true];
-	extend .bnet.protocol.invitation.InvitationParams {
-		optional FriendInvitationParams friend_params = 103;
-	}
+	// extend .bnet.protocol.invitation.InvitationParams {
+		// optional FriendInvitationParams friend_params = 103;
+	// }
 }
