@@ -38,6 +38,9 @@
                                                  
 #define PurpleIMTypingState	                      PurpleTypingState
 #define PURPLE_IM_TYPING                          PURPLE_TYPING
+
+#define PurpleHttpConnection                      PurpleUtilFetchUrlData
+#define purple_http_get(pc, cb, ud, url)          purple_util_fetch_url((url), TRUE, NULL, FALSE, (cb), (ud));
                                                  
 #define purple_notify_user_info_add_pair_html     purple_notify_user_info_add_pair
                                                  
@@ -89,6 +92,8 @@ typedef struct {
 	
 	GHashTable *entity_id_to_battle_tag;
 	GHashTable *battle_tag_to_entity_id;
+	
+	GHashTable *resource_table;
 } BattleNetAccount;
 
 typedef struct {
@@ -936,7 +941,26 @@ bn_dump_field_data(Bnet__Protocol__Presence__Field *field)
 	purple_debug_info("battlenet", "\n");
 }
 
-static void bn_resources_lookup_resource(BattleNetAccount *bna, const gchar *program_id, const gchar *stream_id);
+typedef void (* BattleNetResourceCallback)(BattleNetAccount *bna, const gchar *data, gsize len, gpointer user_data);
+
+static void bn_resources_lookup_resource(BattleNetAccount *bna, const gchar *program_id, const gchar *stream_id, BattleNetResourceCallback callback, gpointer user_data);
+
+static void
+bn_presence_got_resource(BattleNetAccount *bna, const gchar *data, gsize len, gpointer user_data)
+{
+	GHashTable *resource_hash_table = user_data;
+	xmlnode *x = xmlnode_from_str(data, len);
+	xmlnode *e = xmlnode_get_child(x, "e");
+	
+	do {
+		gint id = atoi(xmlnode_get_attrib(e, "id"));
+		gchar *data = xmlnode_get_data_unescaped(e);
+		
+		g_hash_table_insert(resource_hash_table, GINT_TO_POINTER(id), data);
+	} while ((e = xmlnode_get_next_twin(e)) != NULL);
+	
+	xmlnode_free(x);
+}
 
 static void
 bn_channel_update_presence(BattleNetAccount *bna, Bnet__Protocol__EntityId *entity_id, size_t n_field_operation, Bnet__Protocol__Presence__FieldOperation **field_operation)
@@ -1079,13 +1103,24 @@ bn_channel_update_presence(BattleNetAccount *bna, Bnet__Protocol__EntityId *enti
 							g_free(presence_str);
 							
 							if (presence_message.len == 12) {
+								GHashTable *sub_resource_table;
+								
 								program = g_strreverse(g_strndup((gchar *) &presence_message.data[1], 4));
 								stream = g_strreverse(g_strndup((gchar *) &presence_message.data[6], 4));
 								message_id = presence_message.data[11];
 								
-								//TODO look up game name using message_id and program
-								(void) message_id;
-								bn_resources_lookup_resource(bna, program, stream);
+								sub_resource_table = g_hash_table_lookup(bna->resource_table, program);
+								
+								//look up game name using message_id and program
+								if (sub_resource_table != NULL) {
+									//TODO use this as the game status
+									g_hash_table_lookup(sub_resource_table, GINT_TO_POINTER(message_id));
+								} else {
+									sub_resource_table = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
+									g_hash_table_insert(bna->resource_table, g_strdup(program), sub_resource_table);
+									
+									bn_resources_lookup_resource(bna, program, stream, bn_presence_got_resource, sub_resource_table);
+								}
 								
 								g_free(program);
 								g_free(stream);
@@ -1292,6 +1327,148 @@ bn_connection_handle_force_disconnect_request(BattleNetAccount *bna, ProtobufCMe
 	return NULL;
 }
 
+
+#include <zlib.h>
+
+static GString *
+bn_inflate(const guchar *gzip_data, gsize gzip_data_len)
+{
+	z_stream zstr;
+	int gzip_err = 0;
+	gchar *data_buffer;
+	gulong gzip_len = G_MAXUINT16;
+	GString *output_string = NULL;
+
+	data_buffer = g_new0(gchar, gzip_len);
+
+	zstr.next_in = NULL;
+	zstr.avail_in = 0;
+	zstr.zalloc = Z_NULL;
+	zstr.zfree = Z_NULL;
+	zstr.opaque = 0;
+	gzip_err = inflateInit2(&zstr, MAX_WBITS + 32);
+	if (gzip_err != Z_OK)
+	{
+		g_free(data_buffer);
+		purple_debug_error("battlenet", "no built-in inflate support in zlib\n");
+		return NULL;
+	}
+	
+	zstr.next_in = (Bytef *)gzip_data;
+	zstr.avail_in = gzip_data_len;
+	
+	zstr.next_out = (Bytef *)data_buffer;
+	zstr.avail_out = gzip_len;
+	
+	gzip_err = inflate(&zstr, Z_SYNC_FLUSH);
+
+	output_string = g_string_new("");
+	while (gzip_err == Z_OK)
+	{
+		//append data to buffer
+		output_string = g_string_append_len(output_string, data_buffer, gzip_len - zstr.avail_out);
+		//reset buffer pointer
+		zstr.next_out = (Bytef *)data_buffer;
+		zstr.avail_out = gzip_len;
+		gzip_err = inflate(&zstr, Z_SYNC_FLUSH);
+	}
+	if (gzip_err == Z_STREAM_END)
+	{
+		output_string = g_string_append_len(output_string, data_buffer, gzip_len - zstr.avail_out);
+	} else {
+		purple_debug_error("battlenet", "inflate error\n");
+	}
+	inflateEnd(&zstr);
+
+	g_free(data_buffer);	
+
+	return output_string;
+}
+
+typedef struct {
+	BattleNetAccount *bna;
+	BattleNetResourceCallback callback;
+	gpointer user_data;
+	gchar *full_filename;
+} BattleNetResourceDownloadThing;
+
+static void
+bn_download_depot_resource_url_callback(PurpleHttpConnection *http_conn, 
+#if PURPLE_VERSION_CHECK(3, 0, 0)
+PurpleHttpResponse *response, gpointer user_data)
+{
+	gsize len;
+	const gchar *url_text = purple_http_response_get_data(response, &len);
+	const gchar *error_message = purple_http_response_get_error(response);
+#else
+gpointer user_data, const gchar *url_text, gsize len, const gchar *error_message)
+{
+#endif
+	GString *inflated_string = NULL;
+	BattleNetResourceDownloadThing *bnrdt = user_data;
+	
+	// inflate it if compressed
+	if (g_str_has_prefix(url_text, "ZpmC")) {
+		purple_debug_info("battlenet", "inflating compressed download\n");
+		inflated_string = bn_inflate(((const guchar *) url_text) + 16, len - 16);
+		url_text = inflated_string->str;
+		len = inflated_string->len;
+	}
+	
+	purple_debug_info("battlenet", "saving download to %s\n", bnrdt->full_filename);
+	g_file_set_contents(bnrdt->full_filename, url_text, len, NULL);
+	
+	bnrdt->callback(bnrdt->bna, url_text, len, bnrdt->user_data);
+	
+	if (inflated_string != NULL) {
+		g_string_free(inflated_string, TRUE);
+	}
+	
+	g_free(bnrdt->full_filename);
+	g_free(bnrdt);
+}
+
+static void
+bn_download_depot_resource(BattleNetAccount *bna, const gchar *url, BattleNetResourceCallback callback, gpointer user_data)
+{
+	const gchar *filename = strrchr(url, '/');
+	gchar *depot_dir;
+	gchar *full_filename;
+	BattleNetResourceDownloadThing *bnrdt;
+	
+	g_return_if_fail(filename);
+	//skip the first slash
+	filename++;
+	
+	depot_dir = g_strconcat(purple_user_dir(), G_DIR_SEPARATOR_S, "battlenet_depot", NULL);
+	purple_build_dir(depot_dir, 0777);
+	
+	full_filename = g_strconcat(depot_dir, G_DIR_SEPARATOR_S, filename, NULL);
+	g_free(depot_dir);
+	
+	// check that we haven't downloaded already
+	if (g_file_test(full_filename, G_FILE_TEST_EXISTS)) {
+		gchar *data;
+		gsize data_len;
+		if (g_file_get_contents(full_filename, &data, &data_len, NULL)) {
+			purple_debug_info("battlenet", "found cached download at %s\n", full_filename);
+			callback(bna, data, data_len, user_data);
+			
+			g_free(data);
+			g_free(full_filename);
+			return;
+		}
+	}
+	
+	bnrdt = g_new0(BattleNetResourceDownloadThing, 1);
+	bnrdt->bna = bna;
+	bnrdt->callback = callback;
+	bnrdt->user_data = user_data;
+	bnrdt->full_filename = full_filename;
+	
+	purple_http_get(bna->pc, bn_download_depot_resource_url_callback, bnrdt, url);
+}
+
 static void
 bn_resources_content_handle_callback(BattleNetAccount *bna, ProtobufCMessage *body, gpointer user_data)
 {
@@ -1301,6 +1478,7 @@ bn_resources_content_handle_callback(BattleNetAccount *bna, ProtobufCMessage *bo
 	gchar *url;
 	gchar *region = g_strdup(bn_int_to_fourcc(response->region));
 	gchar *usage = g_strdup(bn_int_to_fourcc(response->usage));
+	BattleNetResourceDownloadThing *bnrdt = user_data;
 	
 	for (i = 0; i < 32; i++) {
 		sprintf(&hash[i * 2], "%02x", response->hash.data[i]);
@@ -1309,9 +1487,11 @@ bn_resources_content_handle_callback(BattleNetAccount *bna, ProtobufCMessage *bo
 	url = g_strdup_printf("http://%s.depot.battle.net:1119/%s.%s", region, hash, usage);
 	
 	purple_debug_info("battlenet", "depot content might be at %s\n", url);
+	bn_download_depot_resource(bna, url, bnrdt->callback, bnrdt->user_data);
 	
 	//purple_debug_info("battlenet", "content handle response: proto url %s\nregion %u\nusage %u\nhash: %*s", response->proto_url, response->region, response->usage, response->hash.len, response->hash.data);
 	
+	g_free(bnrdt);
 	g_free(region);
 	g_free(usage);
 	g_free(url);
@@ -1319,16 +1499,22 @@ bn_resources_content_handle_callback(BattleNetAccount *bna, ProtobufCMessage *bo
 }
 
 static void
-bn_resources_lookup_resource(BattleNetAccount *bna, const gchar *program_id, const gchar *stream_id)
+bn_resources_lookup_resource(BattleNetAccount *bna, const gchar *program_id, const gchar *stream_id, BattleNetResourceCallback callback, gpointer user_data)
 {
 	Bnet__Protocol__Resources__ContentHandleRequest request = BNET__PROTOCOL__RESOURCES__CONTENT_HANDLE_REQUEST__INIT;
+	BattleNetResourceDownloadThing *bnrdt;
 	
 	request.program_id = bn_fourcc_to_int(program_id, -1);
 	request.stream_id = bn_fourcc_to_int(stream_id, -1);
 	
 	purple_debug_info("battlenet", "looking up resource program: %x stream: %x\n", request.program_id, request.stream_id);
 	
-	bn_send_request(bna, bna->resources_service_id, 1, (ProtobufCMessage *) &request, bn_resources_content_handle_callback, &bnet__protocol__content_handle__descriptor, NULL);
+	bnrdt = g_new0(BattleNetResourceDownloadThing, 1);
+	bnrdt->bna = bna;
+	bnrdt->callback = callback;
+	bnrdt->user_data = user_data;
+	
+	bn_send_request(bna, bna->resources_service_id, 1, (ProtobufCMessage *) &request, bn_resources_content_handle_callback, &bnet__protocol__content_handle__descriptor, bnrdt);
 }
 
 static void
@@ -1641,6 +1827,7 @@ bn_login(PurpleAccount *account)
 	bna->entity_id_to_battle_tag = g_hash_table_new_full(bn_entity_id_hash, bn_entity_id_equal, g_free, g_free);
 	bna->battle_tag_to_entity_id = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
 	
+	bna->resource_table = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, (GDestroyNotify) g_hash_table_unref);
 	
 	// Imported services
 	service = bn_create_service(bna, "bnet.protocol.authentication.AuthenticationServer");
