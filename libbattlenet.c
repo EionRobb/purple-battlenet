@@ -208,6 +208,17 @@ bn_get_buddy_entity_id(BattleNetAccount *bna, const gchar *battle_tag)
 
 
 static void
+bn_free_callback_method(gpointer data)
+{
+	BattleNetCallbackWrapper *wrapper = data;
+	
+	if (wrapper != NULL) {
+		g_free(wrapper->response_descriptor);
+	}
+	g_free(wrapper);
+}
+
+static void
 bn_free_service_method(gpointer data)
 {
 	BattleNetServiceWrapper *wrapper = data;
@@ -215,6 +226,7 @@ bn_free_service_method(gpointer data)
 	if (wrapper != NULL) {
 		g_free(wrapper->request_descriptor);
 	}
+	g_free(wrapper);
 }
 
 static BattleNetService *
@@ -252,7 +264,7 @@ bn_service_add_method(BattleNetService *service, guint method_id, const Protobuf
 }
 
 static BattleNetServiceMethod
-bn_get_service_method(BattleNetAccount *bna, guint service_id, guint method_id, ProtobufCMessage **request)
+bn_get_service_method(BattleNetAccount *bna, guint service_id, guint method_id, ProtobufCMessageDescriptor *descriptor)
 {
 	BattleNetService *service = g_hash_table_lookup(bna->exported_services, GINT_TO_POINTER(service_id));
 	BattleNetServiceWrapper *wrapper = NULL;
@@ -262,16 +274,12 @@ bn_get_service_method(BattleNetAccount *bna, guint service_id, guint method_id, 
 	}
 	
 	if (wrapper != NULL) {
-		if (request) {
-			*request = g_malloc0(wrapper->request_descriptor->sizeof_message);
-			protobuf_c_message_init(wrapper->request_descriptor, *request);
+		if (descriptor) {
+			*descriptor = *wrapper->request_descriptor;
 		}
 		return wrapper->callback;
 	}	
 	
-	if (request) {
-		*request = NULL;
-	}
 	return NULL;
 }
 
@@ -371,11 +379,12 @@ bn_socket_got_data(gpointer userdata, PurpleSslConnection *conn, PurpleInputCond
 					// Server requesting info from us
 					BattleNetServiceMethod service_method;
 					ProtobufCMessage *response, *request;
+					ProtobufCMessageDescriptor descriptor;
 					
 					purple_debug_info("battlenet", "Request %u.%u\n", proto_header->service_id, proto_header->method_id);
-					service_method = bn_get_service_method(bna, proto_header->service_id, proto_header->method_id, &request);
+					service_method = bn_get_service_method(bna, proto_header->service_id, proto_header->method_id, &descriptor);
 					if (service_method != NULL) {
-						request = protobuf_c_message_unpack(request->descriptor, NULL, bna->frame_body_len, bna->frame_body);
+						request = protobuf_c_message_unpack(&descriptor, NULL, bna->frame_body_len, bna->frame_body);
 						response = service_method(bna, request);
 						
 						if (response != NULL) {
@@ -461,7 +470,7 @@ typedef struct {
 } ProtoBufferAppendToPurpleSSL;
 
 static void
-purple_buffer_ssl_append(ProtobufCBuffer *buffer, unsigned len, const unsigned char *data)
+purple_buffer_ssl_append(ProtobufCBuffer *buffer, size_t len, const guint8 *data)
 {
 	ProtoBufferAppendToPurpleSSL *purple_buffer = (ProtoBufferAppendToPurpleSSL *) buffer;
 	
@@ -913,10 +922,10 @@ bn_dump_field_data(Bnet__Protocol__Presence__Field *field)
 		purple_debug_info("battlenet", "float: %f, ", value->float_value);
 	if (value->string_value)
 		purple_debug_info("battlenet", "string: %s, ", value->string_value);
-	if (value->has_blob_value)
-		purple_debug_info("battlenet", "blob: %*s, ", value->blob_value.len, value->blob_value.data);
-	if (value->has_message_value)
-		purple_debug_info("battlenet", "message: %*s, ", value->message_value.len, value->message_value.data);
+	// if (value->has_blob_value)
+		// purple_debug_info("battlenet", "blob: %*s, ", (int) value->blob_value.len, value->blob_value.data);
+	// if (value->has_message_value)
+		// purple_debug_info("battlenet", "message: %*s, ", (int) value->message_value.len, value->message_value.data);
 	if (value->fourcc_value)
 		purple_debug_info("battlenet", "fourcc: %s, ", value->fourcc_value);
 	if (value->has_uint_value)
@@ -1625,7 +1634,7 @@ bn_login(PurpleAccount *account)
 	bna->account = account;
 	bna->pc = pc;
 	
-	bna->token_callbacks = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free); //TODO proper free func
+	bna->token_callbacks = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, (GDestroyNotify) bn_free_callback_method);
 	bna->imported_services = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, (GDestroyNotify) bn_free_service);
 	bna->exported_services = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, (GDestroyNotify) bn_free_service);
 	
