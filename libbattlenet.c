@@ -4,6 +4,10 @@
 #include <glib.h>
 #include <purple.h>
 
+#if PURPLE_VERSION_CHECK(3, 0, 0)
+#include <http.h>
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,6 +41,7 @@
 #define PURPLE_CONNECTION_CONNECTED               PURPLE_CONNECTED
                                                  
 #define PurpleIMTypingState	                      PurpleTypingState
+#define PURPLE_IM_NOT_TYPING                      PURPLE_NOT_TYPING
 #define PURPLE_IM_TYPING                          PURPLE_TYPING
 
 #define PurpleHttpConnection                      PurpleUtilFetchUrlData
@@ -52,10 +57,23 @@
 #define purple_serv_got_im                        serv_got_im
 #define purple_serv_got_typing                    serv_got_typing
 
+#define PurpleXmlNode                             xmlnode
+#define purple_xmlnode_from_str                   xmlnode_from_str
+#define purple_xmlnode_get_child                  xmlnode_get_child
+#define purple_xmlnode_get_next_twin              xmlnode_get_next_twin
+#define purple_xmlnode_get_data_unescaped         xmlnode_get_data_unescaped
+#define purple_xmlnode_get_attrib                 xmlnode_get_attrib
+#define purple_xmlnode_free                       xmlnode_free
+
+#else
+
+#define PURPLE_TYPE_STRING                        G_TYPE_STRING
+
 #endif
 
 #ifndef _
 #	define _(a) (a)
+#	define N_(a) (a)
 #endif
 
 
@@ -703,8 +721,17 @@ typedef struct {
 	guint64 invite_id;
 } BattleNetInviteResponseStore;
 
-static void bn_friends_auth_accept(gpointer data);
-static void bn_friends_auth_reject(gpointer data);
+static void bn_friends_auth_accept(
+#if PURPLE_VERSION_CHECK(3, 0, 0)
+const gchar *response, 
+#endif
+gpointer data);
+
+static void bn_friends_auth_reject(
+#if PURPLE_VERSION_CHECK(3, 0, 0)
+const gchar *response, 
+#endif
+gpointer data);
 
 static void
 bn_friends_subscribe_result(BattleNetAccount *bna, ProtobufCMessage *body, gpointer user_data)
@@ -949,17 +976,17 @@ static void
 bn_presence_got_resource(BattleNetAccount *bna, const gchar *data, gsize len, gpointer user_data)
 {
 	GHashTable *resource_hash_table = user_data;
-	xmlnode *x = xmlnode_from_str(data, len);
-	xmlnode *e = xmlnode_get_child(x, "e");
+	PurpleXmlNode *x = purple_xmlnode_from_str(data, len);
+	PurpleXmlNode *e = purple_xmlnode_get_child(x, "e");
 	
 	do {
-		gint id = atoi(xmlnode_get_attrib(e, "id"));
-		gchar *data = xmlnode_get_data_unescaped(e);
+		gint id = atoi(purple_xmlnode_get_attrib(e, "id"));
+		gchar *data = purple_xmlnode_get_data_unescaped(e);
 		
 		g_hash_table_insert(resource_hash_table, GINT_TO_POINTER(id), data);
-	} while ((e = xmlnode_get_next_twin(e)) != NULL);
+	} while ((e = purple_xmlnode_get_next_twin(e)) != NULL);
 	
-	xmlnode_free(x);
+	purple_xmlnode_free(x);
 }
 
 static void
@@ -1241,7 +1268,11 @@ bn_channel_notify_update_channel_state(BattleNetAccount *bna, ProtobufCMessage *
 }
 
 static void
-bn_friends_auth_accept(gpointer data)
+bn_friends_auth_accept(
+#if PURPLE_VERSION_CHECK(3, 0, 0)
+const gchar *response, 
+#endif
+gpointer data)
 {
 	BattleNetInviteResponseStore *store = data;
 	Bnet__Protocol__Invitation__GenericRequest request = BNET__PROTOCOL__INVITATION__GENERIC_REQUEST__INIT;
@@ -1253,7 +1284,11 @@ bn_friends_auth_accept(gpointer data)
 }
 
 static void
-bn_friends_auth_reject(gpointer data)
+bn_friends_auth_reject(
+#if PURPLE_VERSION_CHECK(3, 0, 0)
+const gchar *response, 
+#endif
+gpointer data)
 {
 	BattleNetInviteResponseStore *store = data;
 	Bnet__Protocol__Invitation__GenericRequest request = BNET__PROTOCOL__INVITATION__GENERIC_REQUEST__INIT;
@@ -1406,6 +1441,15 @@ gpointer user_data, const gchar *url_text, gsize len, const gchar *error_message
 #endif
 	GString *inflated_string = NULL;
 	BattleNetResourceDownloadThing *bnrdt = user_data;
+	
+	if (error_message != NULL) {
+		purple_debug_info("battlenet", "error in response %s\n", error_message);
+		bnrdt->callback(bnrdt->bna, NULL, 0, bnrdt->user_data);
+		
+		g_free(bnrdt->full_filename);
+		g_free(bnrdt);
+		return;
+	}
 	
 	// inflate it if compressed
 	if (g_str_has_prefix(url_text, "ZpmC")) {
@@ -1584,7 +1628,7 @@ bn_notification_on_notification_received(BattleNetAccount *bna, ProtobufCMessage
 		purple_serv_got_im(bna->pc, request->sender_battle_tag, message, PURPLE_MESSAGE_RECV, time(NULL));
 		g_free(message);
 	} else if (purple_strequal(request->type, "TYPING")) {
-		purple_serv_got_typing(bna->pc, request->sender_battle_tag, 7, request->attribute[0]->value->bool_value ? PURPLE_TYPING : PURPLE_NOT_TYPING);
+		purple_serv_got_typing(bna->pc, request->sender_battle_tag, 7, request->attribute[0]->value->bool_value ? PURPLE_IM_TYPING : PURPLE_IM_NOT_TYPING);
 	} else {
 		purple_debug_error("battlenet", "Unknown notification type\n");
 	}
@@ -2077,18 +2121,11 @@ typedef struct _BattleNetProtocolClass
 } BattleNetProtocolClass;
 
 static void
-bn_protocol_init(PurpleProtocol *prpl_info)
+bn_protocol_init(PurpleProtocol *info)
 {
-	PurpleProtocol *info = prpl_info;
-	PurpleAccountUserSplit *split;
-
 	info->id = BATTLENET_PLUGIN_ID;
 	info->name = "Battle.net";
 	info->options = OPT_PROTO_CHAT_TOPIC | OPT_PROTO_SLASH_COMMANDS_NATIVE;
-	info->account_options = bn_add_account_options(info->account_options);
-	
-	split = purple_account_user_split_new(_("Server"), RC_DEFAULT_SERVER, RC_SERVER_SPLIT_CHAR);
-	info->user_splits = g_list_append(info->user_splits, split);
 }
 
 static void
@@ -2108,38 +2145,17 @@ bn_protocol_im_iface_init(PurpleProtocolIMIface *prpl_info)
 }
 
 static void 
-bn_protocol_chat_iface_init(PurpleProtocolChatIface *prpl_info)
-{
-	prpl_info->send = bn_chat_send;
-	prpl_info->info = bn_chat_info;
-	prpl_info->info_defaults = bn_chat_info_defaults;
-	prpl_info->join = bn_join_chat;
-	prpl_info->get_name = bn_get_chat_name;
-	prpl_info->invite = bn_chat_invite;
-	prpl_info->set_topic = bn_chat_set_topic;
-}
-
-static void 
 bn_protocol_server_iface_init(PurpleProtocolServerIface *prpl_info)
 {
 	prpl_info->add_buddy = bn_add_buddy_with_invite;
 	prpl_info->set_status = bn_set_status;
-	prpl_info->set_idle = bn_set_idle;
 }
 
 static void 
 bn_protocol_client_iface_init(PurpleProtocolClientIface *prpl_info)
 {
-	prpl_info->get_account_text_table = bn_get_account_text_table;
 	prpl_info->status_text = bn_status_text;
 	prpl_info->tooltip_text = bn_tooltip_text;
-}
-
-static void 
-bn_protocol_roomlist_iface_init(PurpleProtocolRoomlistIface *prpl_info)
-{
-	prpl_info->get_list = bn_roomlist_get_list;
-	prpl_info->room_serialize = bn_roomlist_serialize;
 }
 
 static PurpleProtocol *bn_protocol;
@@ -2150,17 +2166,11 @@ PURPLE_DEFINE_TYPE_EXTENDED(
 	PURPLE_IMPLEMENT_INTERFACE_STATIC(PURPLE_TYPE_PROTOCOL_IM_IFACE,
 	                                  bn_protocol_im_iface_init)
 
-	PURPLE_IMPLEMENT_INTERFACE_STATIC(PURPLE_TYPE_PROTOCOL_CHAT_IFACE,
-	                                  bn_protocol_chat_iface_init)
-
 	PURPLE_IMPLEMENT_INTERFACE_STATIC(PURPLE_TYPE_PROTOCOL_SERVER_IFACE,
 	                                  bn_protocol_server_iface_init)
 
 	PURPLE_IMPLEMENT_INTERFACE_STATIC(PURPLE_TYPE_PROTOCOL_CLIENT_IFACE,
 	                                  bn_protocol_client_iface_init)
-
-	PURPLE_IMPLEMENT_INTERFACE_STATIC(PURPLE_TYPE_PROTOCOL_ROOMLIST_IFACE,
-	                                  bn_protocol_roomlist_iface_init)
 
 );
 
