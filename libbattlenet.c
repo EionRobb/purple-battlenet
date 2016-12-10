@@ -748,7 +748,7 @@ bn_friends_subscribe_result(BattleNetAccount *bna, ProtobufCMessage *body, gpoin
 		Bnet__Protocol__Friends__Friend *friend = response->friends[i];
 		
 		bn_presence_subscribe(bna, friend->id);
-		purple_debug_info("battlenet", "This friend has high %" G_GUINT64_FORMAT " and low %" G_GUINT64_FORMAT "\n", friend->id->high, friend->id->low);
+		//purple_debug_info("battlenet", "This friend has high %" G_GUINT64_FORMAT " and low %" G_GUINT64_FORMAT "\n", friend->id->high, friend->id->low);
 		
 		if (friend->battle_tag != NULL) {
 			bn_add_buddy_internal(bna, friend->id, friend->battle_tag, friend->full_name);
@@ -972,6 +972,27 @@ typedef void (* BattleNetResourceCallback)(BattleNetAccount *bna, const gchar *d
 
 static void bn_resources_lookup_resource(BattleNetAccount *bna, const gchar *program_id, const gchar *stream_id, BattleNetResourceCallback callback, gpointer user_data);
 
+static const gchar *
+bn_get_full_game_name(const gchar *game_id)
+{
+	switch(g_str_hash(game_id)) {
+		case 0x0b881656: case 0x0b889e76: //Pro
+			return "Overwatch";
+		case 0x0b8833a2: case 0x0b882f82: case 0x0b88bbe2: //WoW
+			return "World of Warcraft";
+		case 0x0059752a: case 0x0b881ccd: //S2
+			return "Starcraft 2";
+		case 0x0059733c: //D3
+			return "Diablo 3";
+		case 0x7c8e32ba: case 0x005973e0: //WTCG
+			return "Hearthstone";
+		case 0x7c864793: case 0xb73685cb: //Hero
+			return "Heroes";
+	}
+	
+	return game_id;
+}
+
 static void
 bn_presence_got_resource(BattleNetAccount *bna, const gchar *data, gsize len, gpointer user_data)
 {
@@ -987,6 +1008,19 @@ bn_presence_got_resource(BattleNetAccount *bna, const gchar *data, gsize len, gp
 	} while ((e = purple_xmlnode_get_next_twin(e)) != NULL);
 	
 	purple_xmlnode_free(x);
+	
+	// If we were called when in the middle of setting presence info, do that
+	if (g_dataset_get_data(resource_hash_table, "battle_tag")) {
+		gchar *battle_tag = g_dataset_get_data(resource_hash_table, "battle_tag");
+		gchar *program = g_dataset_get_data(resource_hash_table, "program");
+		gpointer message_id_ptr = g_dataset_get_data(resource_hash_table, "message_id");
+		
+		gchar *status_message = g_strdup_printf("%s: %s", bn_get_full_game_name(program), (gchar *)g_hash_table_lookup(resource_hash_table, message_id_ptr));
+		purple_protocol_got_user_status(bna->account, battle_tag, "online", "message", status_message, NULL);
+		g_free(status_message);
+	}
+	
+	g_dataset_destroy(resource_hash_table);
 }
 
 static void
@@ -1003,8 +1037,9 @@ bn_channel_update_presence(BattleNetAccount *bna, Bnet__Protocol__EntityId *enti
 	gboolean away_changed = FALSE;
 	gboolean busy_changed = FALSE;
 	gint64 away_time = 0;
-	const gchar *in_game = NULL;
+	gchar *in_game = NULL;
 	const gchar *rich_presence = NULL;
+	gchar *status_message = NULL;
 	Bnet__Protocol__EntityId *conv_entity_id = NULL;
 	
 	for (i = 0; i < n_field_operation; i++) {
@@ -1082,10 +1117,7 @@ bn_channel_update_presence(BattleNetAccount *bna, Bnet__Protocol__EntityId *enti
 						} break;
 						case 3: {
 							//program
-							in_game = fo->field->value->fourcc_value;
-							if (purple_strequal(in_game, "Pro")) {
-								in_game = "Overwatch";
-							}
+							in_game = g_strdup(fo->field->value->fourcc_value);
 							status_changed = TRUE;
 						} break;
 						case 4: {
@@ -1132,7 +1164,7 @@ bn_channel_update_presence(BattleNetAccount *bna, Bnet__Protocol__EntityId *enti
 							if (presence_message.len == 12) {
 								GHashTable *sub_resource_table;
 								
-								program = g_strreverse(g_strndup((gchar *) &presence_message.data[1], 4));
+								in_game = program = g_strreverse(g_strndup((gchar *) &presence_message.data[1], 4));
 								stream = g_strreverse(g_strndup((gchar *) &presence_message.data[6], 4));
 								message_id = presence_message.data[11];
 								
@@ -1140,16 +1172,23 @@ bn_channel_update_presence(BattleNetAccount *bna, Bnet__Protocol__EntityId *enti
 								
 								//look up game name using message_id and program
 								if (sub_resource_table != NULL) {
-									//TODO use this as the game status
-									g_hash_table_lookup(sub_resource_table, GINT_TO_POINTER(message_id));
+									//use this as the game status
+									rich_presence = g_hash_table_lookup(sub_resource_table, GINT_TO_POINTER(message_id));
+									is_online = TRUE;
+									status_changed = TRUE;
 								} else {
 									sub_resource_table = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
 									g_hash_table_insert(bna->resource_table, g_strdup(program), sub_resource_table);
 									
+									if (!purple_strequal(program, "App")) {
+										g_dataset_set_data_full(sub_resource_table, "battle_tag", g_strdup(battle_tag), g_free);
+										g_dataset_set_data_full(sub_resource_table, "program", g_strdup(program), g_free);
+										g_dataset_set_data_full(sub_resource_table, "message_id", GINT_TO_POINTER(message_id), NULL);
+									}
+									
 									bn_resources_lookup_resource(bna, program, stream, bn_presence_got_resource, sub_resource_table);
 								}
 								
-								g_free(program);
 								g_free(stream);
 							}
 						} break;
@@ -1188,13 +1227,22 @@ bn_channel_update_presence(BattleNetAccount *bna, Bnet__Protocol__EntityId *enti
 		g_hash_table_insert(bna->entity_id_to_battle_tag, bn_copy_entity_id(entity_id), g_strdup(battle_tag));
 	}
 	
-	rich_presence = in_game;
+	if (in_game != NULL && !purple_strequal(in_game, "App")) {
+		if (rich_presence) {
+			status_message = g_strdup_printf("%s: %s", bn_get_full_game_name(in_game), rich_presence);
+		} else {
+			status_message = g_strdup(bn_get_full_game_name(in_game));
+		}
+	}
 	
 	if (battle_tag != NULL) {
 		if (status_changed == TRUE) {
 			if (is_online) {
-				//TODO this isn't reliable :s
-				purple_protocol_got_user_status(bna->account, battle_tag, "online", "message", rich_presence, NULL);
+				if (status_message != NULL) {
+					purple_protocol_got_user_status(bna->account, battle_tag, "online", "message", status_message, NULL);
+				} else {
+					purple_protocol_got_user_status(bna->account, battle_tag, "online", NULL);
+				}
 			} else {
 				purple_protocol_got_user_status(bna->account, battle_tag, "offline", NULL);
 			}
@@ -1215,8 +1263,10 @@ bn_channel_update_presence(BattleNetAccount *bna, Bnet__Protocol__EntityId *enti
 		}
 	}
 	
+	g_free(status_message);
+	g_free(in_game);
+	
 	//TODO
-	(void) in_game;
 	(void) away_time;
 	(void) last_online;
 }
