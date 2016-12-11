@@ -1023,6 +1023,8 @@ bn_presence_got_resource(BattleNetAccount *bna, const gchar *data, gsize len, gp
 	g_dataset_destroy(resource_hash_table);
 }
 
+static void bn_lookup_battle_tag_for_entity(BattleNetAccount *bna, Bnet__Protocol__EntityId *entity_id);
+
 static void
 bn_channel_update_presence(BattleNetAccount *bna, Bnet__Protocol__EntityId *entity_id, size_t n_field_operation, Bnet__Protocol__Presence__FieldOperation **field_operation)
 {
@@ -1269,7 +1271,71 @@ bn_channel_update_presence(BattleNetAccount *bna, Bnet__Protocol__EntityId *enti
 	//TODO
 	(void) away_time;
 	(void) last_online;
+	
+	if (battle_tag == NULL) {
+		bn_lookup_battle_tag_for_entity(bna, entity_id);
+	}
 }
+
+static void
+bn_request_presence_fields_callback(BattleNetAccount *bna, ProtobufCMessage *body, gpointer user_data)
+{
+	Bnet__Protocol__Presence__QueryResponse *response = (Bnet__Protocol__Presence__QueryResponse *) body;
+	Bnet__Protocol__EntityId *entity_id = user_data;
+	guint i;
+	guint n_field = response->n_field;
+	Bnet__Protocol__Presence__FieldOperation **field_operation = g_new0(Bnet__Protocol__Presence__FieldOperation *, n_field);
+	
+	// Convert from an array of Field's to an array of FieldOperation's
+	for (i = 0; i < n_field; i++) {
+		field_operation[i] = g_new0(Bnet__Protocol__Presence__FieldOperation, 1);
+		bnet__protocol__presence__field_operation__init(field_operation[i]);
+		field_operation[i]->field = response->field[i];
+	}
+	
+	bn_channel_update_presence(bna, entity_id, n_field, field_operation);
+	
+	for (i = 0; i < n_field; i++) {
+		g_free(field_operation[i]);
+	}
+	g_free(field_operation);
+	g_free(entity_id);
+}
+
+
+static void
+bn_lookup_battle_tag_for_entity(BattleNetAccount *bna, Bnet__Protocol__EntityId *entity_id)
+{
+	Bnet__Protocol__Presence__QueryRequest request = BNET__PROTOCOL__PRESENCE__QUERY_REQUEST__INIT;
+	Bnet__Protocol__Presence__FieldKey fieldkeys[] = {
+#define BN_ADD_FIELDKEY(program, group, field) \
+		{ PROTOBUF_C_MESSAGE_INIT(&bnet__protocol__presence__field_key__descriptor), (program), (group), (field), 0, 0ull }
+	
+	BN_ADD_FIELDKEY(0x424e, 1, 1),
+	BN_ADD_FIELDKEY(0x424e, 1, 4),
+	BN_ADD_FIELDKEY(0x424e, 1, 6),
+	BN_ADD_FIELDKEY(0x424e, 1, 7),
+	BN_ADD_FIELDKEY(0x424e, 1, 11),
+	BN_ADD_FIELDKEY(0x424e, 2, 3),
+	BN_ADD_FIELDKEY(0x424e, 2, 5),
+	BN_ADD_FIELDKEY(0x424e, 2, 8)
+	
+#undef BN_ADD_FIELDKEY
+	};
+	guint i;
+	
+	request.entity_id = entity_id;
+	request.n_key = sizeof(fieldkeys) / sizeof(Bnet__Protocol__Presence__FieldKey);
+	request.key = g_new0(Bnet__Protocol__Presence__FieldKey *, request.n_key);
+	
+	for (i = 0; i < request.n_key; i++) {
+		request.key[i] = &fieldkeys[i];
+	}
+	
+	bn_send_request(bna, bna->presence_service_id, 4, (ProtobufCMessage *) &request, bn_request_presence_fields_callback, &bnet__protocol__presence__query_response__descriptor, bn_copy_entity_id(entity_id));
+	
+	g_free(request.key);
+}	
 
 ProtobufCMessage *
 bn_channel_notify_add(BattleNetAccount *bna, ProtobufCMessage *request_in)
