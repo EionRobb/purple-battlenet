@@ -1142,57 +1142,41 @@ bn_channel_update_presence(BattleNetAccount *bna, Bnet__Protocol__EntityId *enti
 						} break;
 						case 8: {
 							// rich_presence
+							Bnet__Protocol__Presence__RichPresence *presence;
 							ProtobufCBinaryData presence_message = fo->field->value->message_value;
-							gchar *presence_str = g_new0(gchar, 4 * presence_message.len + 1);
+							GHashTable *sub_resource_table;
 							gchar *program, *stream;
 							guint message_id;
-							gint j, pos;
-							// \r o r P \000 \025 a o r p \030 \025
-							// \r p p A \000 \025 s r p r \030 \000
-							for (j = presence_message.len - 1, pos = 0; j >= 0; j--) {
-								guchar c = presence_message.data[j];
-								if (c < 0x1F || c > 0x7E) {
-									presence_str[pos++] = '\\';
-									presence_str[pos++] = '0' + (((c) >> 6) & 07);
-									presence_str[pos++] = '0' + (((c) >> 3) & 07);
-									presence_str[pos++] = '0' + ((c) & 07);
-								} else {
-									presence_str[pos++] = presence_message.data[j];
-								}
-							}
-							purple_debug_misc("battlenet", "Presence %s\n", presence_str);
-							g_free(presence_str);
 							
-							if (presence_message.len == 12) {
-								GHashTable *sub_resource_table;
+							presence = bnet__protocol__presence__rich_presence__unpack(NULL, presence_message.len, presence_message.data);
+							in_game = program = g_strdup(bn_int_to_fourcc(presence->program_id));
+							stream = g_strdup(bn_int_to_fourcc(presence->stream_id));
+							message_id = presence->index;
+							
+							sub_resource_table = g_hash_table_lookup(bna->resource_table, program);
+							
+							//look up game name using message_id and program
+							if (sub_resource_table != NULL) {
+								//use this as the game status
+								rich_presence = g_hash_table_lookup(sub_resource_table, GINT_TO_POINTER(message_id));
+								is_online = TRUE;
+								status_changed = TRUE;
+							} else {
+								sub_resource_table = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
+								g_hash_table_insert(bna->resource_table, g_strdup(program), sub_resource_table);
 								
-								in_game = program = g_strreverse(g_strndup((gchar *) &presence_message.data[1], 4));
-								stream = g_strreverse(g_strndup((gchar *) &presence_message.data[6], 4));
-								message_id = presence_message.data[11];
-								
-								sub_resource_table = g_hash_table_lookup(bna->resource_table, program);
-								
-								//look up game name using message_id and program
-								if (sub_resource_table != NULL) {
-									//use this as the game status
-									rich_presence = g_hash_table_lookup(sub_resource_table, GINT_TO_POINTER(message_id));
-									is_online = TRUE;
-									status_changed = TRUE;
-								} else {
-									sub_resource_table = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
-									g_hash_table_insert(bna->resource_table, g_strdup(program), sub_resource_table);
-									
-									if (!purple_strequal(program, "App")) {
-										g_dataset_set_data_full(sub_resource_table, "battle_tag", g_strdup(battle_tag), g_free);
-										g_dataset_set_data_full(sub_resource_table, "program", g_strdup(program), g_free);
-										g_dataset_set_data_full(sub_resource_table, "message_id", GINT_TO_POINTER(message_id), NULL);
-									}
-									
-									bn_resources_lookup_resource(bna, program, stream, bn_presence_got_resource, sub_resource_table);
+								if (!purple_strequal(program, "App")) {
+									g_dataset_set_data_full(sub_resource_table, "battle_tag", g_strdup(battle_tag), g_free);
+									g_dataset_set_data_full(sub_resource_table, "program", g_strdup(program), g_free);
+									g_dataset_set_data_full(sub_resource_table, "message_id", GINT_TO_POINTER(message_id), NULL);
 								}
 								
-								g_free(stream);
+								bn_resources_lookup_resource(bna, program, stream, bn_presence_got_resource, sub_resource_table);
 							}
+							
+							g_free(stream);
+							
+							bnet__protocol__presence__rich_presence__free_unpacked(presence, NULL);
 						} break;
 						case 10: {
 							// afk
