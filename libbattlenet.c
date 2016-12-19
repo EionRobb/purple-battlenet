@@ -377,7 +377,7 @@ bn_socket_got_data(gpointer userdata, PurpleSslConnection *conn, PurpleInputCond
 				if (proto_header->service_id == 254) {
 					// This is a response to a request from us
 					if (proto_header->status) {
-						purple_debug_error("battlenet", "Response error %ud for token %ud\n", proto_header->status, proto_header->token);
+						purple_debug_error("battlenet", "Response error %u for token %u\n", proto_header->status, proto_header->token);
 					} else {
 						BattleNetCallbackWrapper *callback_wrapper = g_hash_table_lookup(bna->token_callbacks, GINT_TO_POINTER(proto_header->token));
 						ProtobufCMessageDescriptor *body_desc;
@@ -1149,34 +1149,36 @@ bn_channel_update_presence(BattleNetAccount *bna, Bnet__Protocol__EntityId *enti
 							guint message_id;
 							
 							presence = bnet__protocol__presence__rich_presence__unpack(NULL, presence_message.len, presence_message.data);
-							in_game = program = g_strdup(bn_int_to_fourcc(presence->program_id));
-							stream = g_strdup(bn_int_to_fourcc(presence->stream_id));
-							message_id = presence->index;
-							
-							sub_resource_table = g_hash_table_lookup(bna->resource_table, program);
-							
-							//look up game name using message_id and program
-							if (sub_resource_table != NULL) {
-								//use this as the game status
-								rich_presence = g_hash_table_lookup(sub_resource_table, GINT_TO_POINTER(message_id));
-								is_online = TRUE;
-								status_changed = TRUE;
-							} else {
-								sub_resource_table = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
-								g_hash_table_insert(bna->resource_table, g_strdup(program), sub_resource_table);
+							if (presence != NULL) {
+								in_game = program = g_strdup(bn_int_to_fourcc(presence->program_id));
+								stream = g_strdup(bn_int_to_fourcc(presence->stream_id));
+								message_id = presence->index;
 								
-								if (!purple_strequal(program, "App")) {
-									g_dataset_set_data_full(sub_resource_table, "battle_tag", g_strdup(battle_tag), g_free);
-									g_dataset_set_data_full(sub_resource_table, "program", g_strdup(program), g_free);
-									g_dataset_set_data_full(sub_resource_table, "message_id", GINT_TO_POINTER(message_id), NULL);
+								sub_resource_table = g_hash_table_lookup(bna->resource_table, program);
+								
+								//look up game name using message_id and program
+								if (sub_resource_table != NULL) {
+									//use this as the game status
+									rich_presence = g_hash_table_lookup(sub_resource_table, GINT_TO_POINTER(message_id));
+									is_online = TRUE;
+									status_changed = TRUE;
+								} else {
+									sub_resource_table = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
+									g_hash_table_insert(bna->resource_table, g_strdup(program), sub_resource_table);
+									
+									if (!purple_strequal(program, "App")) {
+										g_dataset_set_data_full(sub_resource_table, "battle_tag", g_strdup(battle_tag), g_free);
+										g_dataset_set_data_full(sub_resource_table, "program", g_strdup(program), g_free);
+										g_dataset_set_data_full(sub_resource_table, "message_id", GINT_TO_POINTER(message_id), NULL);
+									}
+									
+									bn_resources_lookup_resource(bna, program, stream, bn_presence_got_resource, sub_resource_table);
 								}
 								
-								bn_resources_lookup_resource(bna, program, stream, bn_presence_got_resource, sub_resource_table);
+								g_free(stream);
+								
+								bnet__protocol__presence__rich_presence__free_unpacked(presence, NULL);
 							}
-							
-							g_free(stream);
-							
-							bnet__protocol__presence__rich_presence__free_unpacked(presence, NULL);
 						} break;
 						case 10: {
 							// afk
@@ -1257,6 +1259,7 @@ bn_channel_update_presence(BattleNetAccount *bna, Bnet__Protocol__EntityId *enti
 	(void) last_online;
 	
 	if (battle_tag == NULL) {
+		bn_presence_subscribe(bna, entity_id);
 		bn_lookup_battle_tag_for_entity(bna, entity_id);
 	}
 }
@@ -1295,14 +1298,14 @@ bn_lookup_battle_tag_for_entity(BattleNetAccount *bna, Bnet__Protocol__EntityId 
 #define BN_ADD_FIELDKEY(program, group, field) \
 		{ PROTOBUF_C_MESSAGE_INIT(&bnet__protocol__presence__field_key__descriptor), (program), (group), (field), 0, 0ull }
 	
-	BN_ADD_FIELDKEY(0x424e, 1, 1),
-	BN_ADD_FIELDKEY(0x424e, 1, 4),
-	BN_ADD_FIELDKEY(0x424e, 1, 6),
-	BN_ADD_FIELDKEY(0x424e, 1, 7),
-	BN_ADD_FIELDKEY(0x424e, 1, 11),
-	BN_ADD_FIELDKEY(0x424e, 2, 3),
+	//BN_ADD_FIELDKEY(0x424e, 1, 1),
+	//BN_ADD_FIELDKEY(0x424e, 1, 4),
+	//BN_ADD_FIELDKEY(0x424e, 1, 6),
+	//BN_ADD_FIELDKEY(0x424e, 1, 7),
+	//BN_ADD_FIELDKEY(0x424e, 1, 11),
+	//BN_ADD_FIELDKEY(0x424e, 2, 3),
 	BN_ADD_FIELDKEY(0x424e, 2, 5),
-	BN_ADD_FIELDKEY(0x424e, 2, 8)
+	//BN_ADD_FIELDKEY(0x424e, 2, 8)
 	
 #undef BN_ADD_FIELDKEY
 	};
