@@ -669,13 +669,15 @@ bn_socket_failed(PurpleSslConnection *conn, PurpleSslErrorType errortype, gpoint
 static void
 bn_connect(BattleNetAccount *bna)
 {
+	const gchar *connect_server;
+	
 	//Reset all the old stuff
 	if (bna->socket != NULL) {
 		purple_ssl_close(bna->socket);
 	}
 	
-	//TODO switch server
-	bna->socket = purple_ssl_connect(bna->account, "us.actual.battle.net", 1119, bn_socket_connected, bn_socket_failed, bna);
+	connect_server = purple_account_get_string(bna->account, "connect_server", "us.actual.battle.net");
+	bna->socket = purple_ssl_connect(bna->account, connect_server, 1119, bn_socket_connected, bn_socket_failed, bna);
 }
 
 
@@ -2085,8 +2087,31 @@ bn_close(PurpleConnection *pc)
 }
 
 
+	static const gchar *connect_servers[] = {
+		"Americas", "us.actual.battle.net",
+		"Europe", "eu.actual.battle.net",
+		"Asia", "kr.actual.battle.net",
+		NULL, NULL
+	};
 
-
+static GList *
+bn_add_account_options(GList *account_options)
+{
+	PurpleAccountOption *option;
+	GList *connect_server_options = NULL;
+	guint i;
+	
+	for (i = 0; connect_servers[i]; i += 2) {
+		PurpleKeyValuePair *kvp = g_new0(PurpleKeyValuePair, 1);
+		kvp->key = g_strdup(_(connect_servers[i]));
+		kvp->value = g_strdup(connect_servers[i + 1]);
+		connect_server_options = g_list_append(connect_server_options, kvp);
+	}
+	option = purple_account_option_list_new(_("Region / Account"), "connect_server", connect_server_options);
+	account_options = g_list_append(account_options, option);
+	
+	return account_options;
+}
 
 static gboolean
 plugin_load(PurplePlugin *plugin, GError **error)
@@ -2135,7 +2160,7 @@ plugin_init(PurplePlugin *plugin)
 	#endif
 	
 	prpl_info->options = OPT_PROTO_CHAT_TOPIC | OPT_PROTO_SLASH_COMMANDS_NATIVE;
-	// prpl_info->protocol_options = bn_add_account_options(prpl_info->protocol_options);
+	prpl_info->protocol_options = bn_add_account_options(prpl_info->protocol_options);
 	prpl_info->icon_spec.format = "png,gif,jpeg";
 	prpl_info->icon_spec.min_width = 0;
 	prpl_info->icon_spec.min_height = 0;
@@ -2229,6 +2254,8 @@ bn_protocol_init(PurpleProtocol *info)
 	info->id = BATTLENET_PLUGIN_ID;
 	info->name = "Battle.net";
 	info->options = OPT_PROTO_CHAT_TOPIC | OPT_PROTO_SLASH_COMMANDS_NATIVE;
+	
+	info->account_options = bn_add_account_options(info->account_options);
 }
 
 static void
