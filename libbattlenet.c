@@ -1812,6 +1812,12 @@ bn_status_types(PurpleAccount *account)
 
 	status = purple_status_type_new_with_attrs(PURPLE_STATUS_UNAVAILABLE, "busy", "Busy", TRUE, TRUE, TRUE, "message", "Presence", purple_value_new(PURPLE_TYPE_STRING), NULL);
 	types = g_list_append(types, status);
+
+	status = purple_status_type_new_with_attrs(PURPLE_STATUS_AWAY, "away-set", "Away", TRUE, TRUE, FALSE, "message", "Presence", purple_value_new(PURPLE_TYPE_STRING), NULL);
+	types = g_list_append(types, status);
+
+	status = purple_status_type_new_with_attrs(PURPLE_STATUS_UNAVAILABLE, "busy-set", "Busy", TRUE, TRUE, FALSE, "message", "Presence", purple_value_new(PURPLE_TYPE_STRING), NULL);
+	types = g_list_append(types, status);
 	
 	status = purple_status_type_new_full(PURPLE_STATUS_OFFLINE, "offline", "Offline", TRUE, TRUE, FALSE);
 	types = g_list_append(types, status);
@@ -1843,11 +1849,11 @@ bn_set_status(PurpleAccount *account, PurpleStatus *status)
 	
 	away_key.field = 7;
 	away_value.has_bool_value = TRUE;
-	away_value.bool_value = purple_strequal(new_status, "away");
+	away_value.bool_value = purple_strequal(new_status, "away") || purple_strequal(new_status, "away-set");
 	
 	busy_key.field = 11;
 	busy_value.has_bool_value = TRUE;
-	busy_value.bool_value = purple_strequal(new_status, "busy");
+	busy_value.bool_value = purple_strequal(new_status, "busy") || purple_strequal(new_status, "busy");
 	
 	away_field.key = &away_key;
 	away_field.value = &away_value;
