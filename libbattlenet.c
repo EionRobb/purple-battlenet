@@ -1970,6 +1970,12 @@ bn_tooltip_text(PurpleBuddy *buddy, PurpleNotifyUserInfo *user_info, gboolean fu
 	}
 }
 
+static gboolean
+bn_offline_message(const PurpleBuddy *buddy)
+{
+	return FALSE;
+}
+
 static void
 bn_login(PurpleAccount *account)
 {
@@ -2211,6 +2217,8 @@ plugin_init(PurplePlugin *plugin)
 	
 	// prpl_info->roomlist_get_list = bn_roomlist_get_list;
 	// prpl_info->roomlist_room_serialize = bn_roomlist_serialize;
+	
+	prpl_info->offline_message = bn_offline_message;
 }
 
 static PurplePluginInfo info = {
@@ -2306,6 +2314,7 @@ bn_protocol_client_iface_init(PurpleProtocolClientIface *prpl_info)
 {
 	prpl_info->status_text = bn_status_text;
 	prpl_info->tooltip_text = bn_tooltip_text;
+	prpl_info->offline_message = bn_offline_message;
 }
 
 static PurpleProtocol *bn_protocol;
