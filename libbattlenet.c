@@ -1207,14 +1207,29 @@ bn_channel_update_presence(BattleNetAccount *bna, Bnet__Protocol__EntityId *enti
 	}
 	
 	purple_debug_info("battlenet", "Battle tag %s has high %" G_GUINT64_FORMAT " and low %" G_GUINT64_FORMAT "\n", battle_tag, entity_id->high, entity_id->low);
-	//TODO this entity_id is wrong for this battle_tag
-	if (conv_entity_id && battle_tag) {
-		bn_add_buddy_internal(bna, conv_entity_id, battle_tag, full_name);
-	}
-	
-	if (battle_tag && !g_hash_table_lookup(bna->entity_id_to_battle_tag, entity_id)) {
-		// Save for lookup later, but only one way - these aren't conversation entities
-		g_hash_table_insert(bna->entity_id_to_battle_tag, bn_copy_entity_id(entity_id), g_strdup(battle_tag));
+	if (battle_tag) {
+		if (conv_entity_id) {
+			//TODO this entity_id is wrong for this battle_tag
+			bn_add_buddy_internal(bna, conv_entity_id, battle_tag, full_name);
+		} else {
+			PurpleBuddy *buddy = purple_blist_find_buddy(bna->account, battle_tag);
+			if (buddy == NULL) {
+				buddy = purple_buddy_new(bna->account, battle_tag, full_name);
+				purple_blist_add_buddy(buddy, NULL, bn_get_buddy_group(), NULL);
+			}
+		}
+		
+		if (!g_hash_table_lookup(bna->entity_id_to_battle_tag, entity_id)) {
+			// Save for lookup later, but only one way - these aren't conversation entities
+			g_hash_table_insert(bna->entity_id_to_battle_tag, bn_copy_entity_id(entity_id), g_strdup(battle_tag));
+		}
+		
+		if (last_online) {
+			PurpleBuddy *buddy = purple_blist_find_buddy(bna->account, battle_tag);
+			if (buddy != NULL) {
+				purple_blist_node_set_int(PURPLE_BLIST_NODE(buddy), "last_seen", last_online);
+			}
+		}
 	}
 	
 	if (in_game != NULL && !purple_strequal(in_game, "App")) {
@@ -1258,7 +1273,6 @@ bn_channel_update_presence(BattleNetAccount *bna, Bnet__Protocol__EntityId *enti
 	
 	//TODO
 	(void) away_time;
-	(void) last_online;
 	
 	if (battle_tag == NULL) {
 		bn_presence_subscribe(bna, entity_id);
