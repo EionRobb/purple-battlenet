@@ -1,9 +1,15 @@
-![Logo](https://bitbucket.org/EionRobb/purple-battlnet/avatar)
 # Battle.net Plugin for libpurple #
 
-A work-in-progress plugin to login and send whispers to Battle.net v2 users.
+A work-in-progress plugin to login and send whispers to Battle.net v2 (a.k.a. Blizzard App) users.
 
 This plugin is written by [Eion Robb](https://eion.robbmob.com/blog/) using protobufs from [the python-bnet repo](https://github.com/HearthSim/python-bnet).  GPLv3+ licensed.
+
+## Login Tips ##
+When you login from Pidgin, make sure you're already logged in to the https://battle.net/ website.  Your browser window should complain about "The webpage at http://localhost:0/?ST=... can't be reached" which is the correct response; you want to copy-paste the ST=... part of the URL into the Pidgin popup window.
+
+If instead you see a broken login screen with a blue button that says ![Log in to Blizzard](https://bitbucket.org/repo/BraGRX/images/2438398133-log%20in%20to%20blizzard.PNG) 
+
+then you'll need to login elsewhere, then reload that page to be able to follow the login steps above. 
 
 ## Compiling ##
 You'll need development packages for libpurple, glib and libprotobuf-c to be able to compile.
