@@ -2151,6 +2151,7 @@ bn_add_account_options(GList *account_options)
 	
 	if (g_strcmp0(purple_core_get_ui(), "BitlBee") == 0) {
 		option = purple_account_option_string_new(_("Web Credentials"), "web_credentials", NULL);
+		account_options = g_list_append(account_options, option);
 	}
 	
 	return account_options;
