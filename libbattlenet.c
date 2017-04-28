@@ -807,6 +807,12 @@ bn_authentication_logon_result(BattleNetAccount *bna, ProtobufCMessage *request_
 	Bnet__Protocol__Authentication__LogonResult *request = (Bnet__Protocol__Authentication__LogonResult *) request_in;
 	guint i;
 	
+	if (!request || !request->battle_tag || !request->account) {
+		purple_connection_error(bna->pc, PURPLE_CONNECTION_ERROR_NETWORK_ERROR, 
+			_("Network error when logging on"));
+		return NULL;
+	}
+	
 	purple_debug_info("battlenet", "Battle tag is %s\n", request->battle_tag);
 	bna->account_entity = bn_copy_entity_id(request->account);
 	
