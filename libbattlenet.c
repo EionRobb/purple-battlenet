@@ -842,6 +842,12 @@ bn_webcred_input_cb(gpointer user_data, const gchar *auth_code)
 {
 	BattleNetAccount *bna = user_data;
 
+	if (g_strcmp0(purple_core_get_ui(), "BitlBee") == 0) {
+		gchar *save_command = g_strdup_printf("account battlenet set web_credentials %s", auth_code);
+		purple_notify_warning(bna->pc, "Set settings manually", "Please run the following command in the &bitlbee channel", save_command);
+		g_free(save_command);
+	}
+	
 	purple_account_set_string(bna->account, "web_credentials", auth_code);
 	bn_auth_verify_web_credentials(bna, NULL);
 }
@@ -2141,6 +2147,11 @@ bn_add_account_options(GList *account_options)
 	}
 	option = purple_account_option_list_new(_("Region / Account"), "connect_server", connect_server_options);
 	account_options = g_list_append(account_options, option);
+	
+	
+	if (g_strcmp0(purple_core_get_ui(), "BitlBee") == 0) {
+		option = purple_account_option_string_new(_("Web Credentials"), "web_credentials", NULL);
+	}
 	
 	return account_options;
 }
