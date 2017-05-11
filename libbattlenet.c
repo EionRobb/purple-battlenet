@@ -712,6 +712,10 @@ bn_presence_subscribe(BattleNetAccount *bna, Bnet__Protocol__EntityId *entity)
 {
 	Bnet__Protocol__Presence__SubscribeRequest request = BNET__PROTOCOL__PRESENCE__SUBSCRIBE_REQUEST__INIT;
 	
+	if (entity == NULL) {
+		return;
+	}
+	
 	request.entity_id = entity;
 	request.object_id = bn_next_object_id(bna);
 	
