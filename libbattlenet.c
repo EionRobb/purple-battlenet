@@ -845,6 +845,16 @@ static void
 bn_webcred_input_cb(gpointer user_data, const gchar *auth_code)
 {
 	BattleNetAccount *bna = user_data;
+	gchar *modified_auth_code = NULL;
+	const gchar *tmp;
+	
+	if ((tmp = strstr(auth_code, "ST="))) {
+		auth_code = tmp + 3;
+	}
+	if ((tmp = strchr(auth_code, '&'))) {
+		modified_auth_code = g_strndup(auth_code, tmp - auth_code);
+		auth_code = modified_auth_code;
+	}
 
 	if (g_strcmp0(purple_core_get_ui(), "BitlBee") == 0) {
 		gchar *save_command = g_strdup_printf("account battlenet set web_credentials %s", auth_code);
@@ -854,6 +864,8 @@ bn_webcred_input_cb(gpointer user_data, const gchar *auth_code)
 	
 	purple_account_set_string(bna->account, "web_credentials", auth_code);
 	bn_auth_verify_web_credentials(bna, NULL);
+	
+	g_free(modified_auth_code);
 }
 
 static void
