@@ -877,10 +877,21 @@ bn_auth_verify_web_credentials(BattleNetAccount *bna, const gchar *auth_url)
 	}
 	
 	if (web_credentials == NULL && auth_url != NULL) {
-		purple_notify_uri(bna->pc, auth_url);
-		purple_request_input(bna->pc, _("Authorization Code"), auth_url,
-			_ ("Please follow the URL to get the ST= info header and paste here"),
-			_ ("US-"), FALSE, FALSE, NULL, 
+		// Lets play with the auth_url a bit to make it slightly easier to use
+		gchar *modified_auth_url = g_strconcat(auth_url, "&ref=http://localhost:3466/", NULL);
+		const gchar *placeholder = "US-...";
+		const gchar *connect_server = purple_account_get_string(bna->account, "connect_server", "us.actual.battle.net");
+		
+		if (g_str_has_prefix(connect_server, "kr.")) {
+			placeholder = "KR-...";
+		} else if (g_str_has_prefix(connect_server, "eu.")) {
+			placeholder = "EU-...";
+		}
+		
+		purple_notify_uri(bna->pc, modified_auth_url);
+		purple_request_input(bna->pc, _("Authorization Code"), modified_auth_url,
+			_("Please follow the URL to get the ST= info header and paste here"),
+			placeholder, FALSE, FALSE, NULL, 
 			_("OK"), G_CALLBACK(bn_webcred_input_cb), 
 			_("Cancel"), G_CALLBACK(bn_webcred_input_cancel_cb), 
 			purple_request_cpar_from_connection(bna->pc), bna);
@@ -888,6 +899,8 @@ bn_auth_verify_web_credentials(BattleNetAccount *bna, const gchar *auth_url)
 		//TODO use the auth_url to auth
 		// then grab the content of 
 		//Location: http://localhost:0/?ST={this-bit}&region=&accountName=...
+		
+		g_free(modified_auth_url);
 		return;
 	}
 	
