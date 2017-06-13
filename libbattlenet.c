@@ -393,7 +393,7 @@ bn_socket_got_data(gpointer userdata, PurpleSslConnection *conn, PurpleInputCond
 							callback_wrapper->callback(bna, proto_body, callback_wrapper->user_data);
 							
 							g_hash_table_remove(bna->token_callbacks, GINT_TO_POINTER(proto_header->token));
-							if (body_desc != NULL) {
+							if (body_desc != NULL && proto_body != NULL) {
 								protobuf_c_message_free_unpacked(proto_body, NULL);
 							}
 						}
