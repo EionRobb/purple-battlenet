@@ -17,8 +17,8 @@ message SubscribeToFriendsResponse {
 	optional uint32 max_sent_invitations = 3;
 	repeated Role role = 4;
 	repeated Friend friends = 5;
-	repeated invitation.Invitation sent_invitations = 6;
-	repeated invitation.Invitation received_invitations = 7;
+	//repeated invitation.Invitation sent_invitations = 6;
+	repeated ReceivedInvitation received_invitations = 7;
 }
 
 message UnsubscribeToFriendsRequest {

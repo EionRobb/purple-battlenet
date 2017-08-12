@@ -689,7 +689,7 @@ bn_authentication_logon(BattleNetAccount *bna)
 	request.program = "App";
 	request.platform = "Win"; //TODO?
 	request.locale = "enUS"; //TODO?
-	request.version = "8180";
+	request.version = "8839";
 	request.has_application_version = TRUE;
 	request.application_version = 1;
 	request.has_public_computer = TRUE;
@@ -700,7 +700,7 @@ bn_authentication_logon(BattleNetAccount *bna)
 	request.allow_logon_queue_notifications = TRUE;
 	request.has_web_client_verification = TRUE;
 	request.web_client_verification = TRUE;
-	request.user_agent = "Battle.net/1.5.2.8180 (PC;Intel_R_Core_TM_i7_2600K_CPU_3.40GHz_16352_MB_;Desktop;c05571db8b3f670d74b2238da294daef0e278166;26424;AMD_Radeon_HD_6800_Series;ATI;4098;Direct3D_9.0c_aticfx32.dll_8.17.10.1404_;1011;30;Full;Windows_7_Service_Pack_1_6.1.7601_64bit;8;Intel_R_Core_TM_i7_2600K_CPU_3.40GHz;4;True;False;False;False;True;False;False;True;True;True;False;1;False;16352;True;True;True;False;1920;1080;96;Desktop;True) Battle.net/CSharp";
+	request.user_agent = "Battle.net/1.8.2.8839 (PC;Intel_R_Core_TM_i7_2600K_CPU_3.40GHz_16352_MB_;Desktop;c05571db8b3f670d74b2238da294daef0e278166;26424;AMD_Radeon_HD_6800_Series;ATI;4098;Direct3D_9.0c_aticfx32.dll_8.17.10.1404_;1011;30;Full;Windows_7_Service_Pack_1_6.1.7601_64bit;8;Intel_R_Core_TM_i7_2600K_CPU_3.40GHz;4;True;False;False;False;True;False;False;True;True;True;False;1;False;16352;True;True;True;False;1920;1080;96;Desktop;True) Battle.net/CSharp";
 	
 	// response is sent via RPC to bn_authentication_logon_result
 	bn_send_request(bna, bna->auth_service_id, 1, (ProtobufCMessage *) &request, NULL, NULL, NULL);
@@ -757,12 +757,12 @@ bn_friends_subscribe_result(BattleNetAccount *bna, ProtobufCMessage *body, gpoin
 		//purple_debug_info("battlenet", "This friend has high %" G_GUINT64_FORMAT " and low %" G_GUINT64_FORMAT "\n", friend->id->high, friend->id->low);
 		
 		if (friend->battle_tag != NULL) {
-			bn_add_buddy_internal(bna, friend->id, friend->battle_tag, friend->full_name);
+			bn_add_buddy_internal(bna, friend->id, friend->battle_tag, NULL);
 		}
 	}
 	
 	for (i = 0; i < response->n_received_invitations; i++) {
-		Bnet__Protocol__Invitation__Invitation *invitation = response->received_invitations[i];
+		Bnet__Protocol__Friends__ReceivedInvitation *invitation = response->received_invitations[i];
 		BattleNetInviteResponseStore *store = g_new0(BattleNetInviteResponseStore, 1);
 		
 		store->bna = bna;
@@ -1260,6 +1260,8 @@ bn_channel_update_presence(BattleNetAccount *bna, Bnet__Protocol__EntityId *enti
 			}
 		}
 		
+		//TODO set full_name for a buddy if it hasn't been set yet
+		
 		if (!g_hash_table_lookup(bna->entity_id_to_battle_tag, entity_id)) {
 			// Save for lookup later, but only one way - these aren't conversation entities
 			g_hash_table_insert(bna->entity_id_to_battle_tag, bn_copy_entity_id(entity_id), g_strdup(battle_tag));
@@ -1478,7 +1480,7 @@ bn_friends_on_add(BattleNetAccount *bna, ProtobufCMessage *request_in)
 {
 	Bnet__Protocol__Friends__FriendNotification *request = (Bnet__Protocol__Friends__FriendNotification *) request_in;
 	
-	bn_add_buddy_internal(bna, request->target->id, request->target->battle_tag, request->target->full_name);
+	bn_add_buddy_internal(bna, request->target->id, request->target->battle_tag, NULL);
 	
 	bn_presence_subscribe(bna, request->target->id);
 	

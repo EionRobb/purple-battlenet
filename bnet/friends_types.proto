@@ -2,6 +2,16 @@ package bnet.protocol.friends;
 import "bnet/attribute.proto";
 import "bnet/entity.proto";
 
+message ReceivedInvitation {
+ required fixed64 id = 1;
+ required Identity inviter_identity = 2;
+ required Identity invitee_identity = 3;
+ optional string inviter_name = 4;
+ optional string invitee_name = 5;
+ optional string invitation_message = 6;
+ optional uint64 creation_time = 7;
+ optional uint64 expiration_time = 8;
+}
 
 message Friend {
 	required EntityId id = 1;
@@ -9,7 +19,7 @@ message Friend {
 	repeated uint32 role = 3 [packed = true];
 	optional uint64 privileges = 4 [default = 0];
 	optional uint64 attributes_epoch = 5;
-	optional string full_name = 6;
+	//optional string full_name = 6;
 	optional string battle_tag = 7;
 }
 
