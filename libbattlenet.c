@@ -789,6 +789,7 @@ bn_channel_subscribe_to_channels(BattleNetAccount *bna)
 	bn_send_request(bna, bna->channel_invitation_service_id, 1, (ProtobufCMessage *) &request, NULL, NULL, NULL);
 }
 
+static void bn_set_status(PurpleAccount *account, PurpleStatus *status);
 
 static void
 bn_auth_on_select_game_account(BattleNetAccount *bna, ProtobufCMessage *body, gpointer user_data)
@@ -797,6 +798,8 @@ bn_auth_on_select_game_account(BattleNetAccount *bna, ProtobufCMessage *body, gp
 	bn_channel_subscribe_to_channels(bna);
 	
 	purple_connection_set_state(bna->pc, PURPLE_CONNECTION_CONNECTED);
+	
+	bn_set_status(bna->account, purple_account_get_active_status(bna->account));
 }
 
 static void
@@ -1774,6 +1777,8 @@ bn_notification_on_notification_received(BattleNetAccount *bna, ProtobufCMessage
 	Bnet__Protocol__Notification__Notification *request = (Bnet__Protocol__Notification__Notification *) request_in;
 	guint i;
 	
+	g_return_val_if_fail(request->sender_battle_tag, NULL);
+	
 	bn_add_buddy_internal(bna, request->sender_id, request->sender_battle_tag, NULL);
 	
 	purple_debug_info("battlenet", "Notifcation type %s\n", request->type);
@@ -1783,7 +1788,9 @@ bn_notification_on_notification_received(BattleNetAccount *bna, ProtobufCMessage
 		purple_debug_info("battlenet", "Notification %d has attribute %s\n", i, attribute->name);
 	}
 	
-	purple_debug_info("battlenet", "Battle tag %s has high %" G_GUINT64_FORMAT " and low %" G_GUINT64_FORMAT "\n", request->sender_battle_tag, request->sender_id->high, request->sender_id->low);
+	if (request->sender_id) {
+		purple_debug_info("battlenet", "Battle tag %s has high %" G_GUINT64_FORMAT " and low %" G_GUINT64_FORMAT "\n", request->sender_battle_tag, request->sender_id->high, request->sender_id->low);
+	}
 	
 	if (purple_strequal(request->type, "WHISPER")) {
 		gchar *message = purple_markup_escape_text(request->attribute[0]->value->string_value, -1);
@@ -1910,7 +1917,7 @@ bn_set_status(PurpleAccount *account, PurpleStatus *status)
 	
 	busy_key.field = 11;
 	busy_value.has_bool_value = TRUE;
-	busy_value.bool_value = purple_strequal(new_status, "busy") || purple_strequal(new_status, "busy");
+	busy_value.bool_value = purple_strequal(new_status, "busy") || purple_strequal(new_status, "busy-set");
 	
 	away_field.key = &away_key;
 	away_field.value = &away_value;
@@ -2017,6 +2024,12 @@ static gboolean
 bn_offline_message(const PurpleBuddy *buddy)
 {
 	return FALSE;
+}
+
+void
+bn_get_info(PurpleConnection *pc, const gchar *who)
+{
+	//https://us.profile.blizzard.com/settings/358618499?ST=...&locale=en_US&loginRegion=us
 }
 
 static void
@@ -2234,7 +2247,7 @@ plugin_init(PurplePlugin *plugin)
 		prpl_info->add_buddy_with_invite = bn_add_buddy_with_invite;
 	#endif
 	
-	prpl_info->options = OPT_PROTO_CHAT_TOPIC | OPT_PROTO_SLASH_COMMANDS_NATIVE;
+	prpl_info->options = OPT_PROTO_CHAT_TOPIC | OPT_PROTO_SLASH_COMMANDS_NATIVE | OPT_PROTO_NO_PASSWORD;
 	prpl_info->protocol_options = bn_add_account_options(prpl_info->protocol_options);
 	prpl_info->icon_spec.format = "png,gif,jpeg";
 	prpl_info->icon_spec.min_width = 0;
@@ -2263,6 +2276,7 @@ plugin_init(PurplePlugin *plugin)
 	prpl_info->add_buddy = bn_add_buddy;
 	prpl_info->status_text = bn_status_text;
 	prpl_info->tooltip_text = bn_tooltip_text;
+	prpl_info->get_info = bn_get_info;
 	
 	// prpl_info->roomlist_get_list = bn_roomlist_get_list;
 	// prpl_info->roomlist_room_serialize = bn_roomlist_serialize;
@@ -2330,7 +2344,7 @@ bn_protocol_init(PurpleProtocol *info)
 {
 	info->id = BATTLENET_PLUGIN_ID;
 	info->name = "Battle.net";
-	info->options = OPT_PROTO_CHAT_TOPIC | OPT_PROTO_SLASH_COMMANDS_NATIVE;
+	info->options = OPT_PROTO_CHAT_TOPIC | OPT_PROTO_SLASH_COMMANDS_NATIVE | OPT_PROTO_NO_PASSWORD;
 	
 	info->account_options = bn_add_account_options(info->account_options);
 }

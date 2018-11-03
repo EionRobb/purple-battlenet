@@ -7,7 +7,7 @@ import "bnet/entity.proto";
 message RichPresence {
 	required fixed32 program_id = 1;
 	required fixed32 stream_id = 2;
-	required uint32 index = 3;
+	optional uint32 index = 3;
 }
 
 message FieldKey {
