@@ -10,8 +10,8 @@ WIN32_CC ?= $(WIN32_DEV_TOP)/mingw-4.7.2/bin/gcc
 PROTOC_C ?= protoc-c
 PKG_CONFIG ?= pkg-config
 
-REVISION_ID = $(shell hg id -i)
-REVISION_NUMBER = $(shell hg id -n)
+REVISION_ID = $(shell git rev-parse HEAD)
+REVISION_NUMBER = $(shell git rev-list --all --count)
 ifneq ($(REVISION_ID),)
 PLUGIN_VERSION ?= 0.9.$(shell date +%Y.%m.%d).git.r$(REVISION_NUMBER).$(REVISION_ID)
 else
