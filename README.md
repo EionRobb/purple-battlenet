@@ -17,7 +17,7 @@ Run the following commands from a terminal
 
 ```
 #!sh
-sudo apt-get install libpurple-dev libglib2.0-dev libprotobuf-c-dev protobuf-c-compiler mercurial make;
+sudo apt-get install libpurple-dev libglib2.0-dev libprotobuf-c-dev protobuf-c-compiler make;
 git clone https://github.com/EionRobb/purple-battlenet/ && cd purple-battlenet;
 make && sudo make install
 ```
